@@ -18,6 +18,7 @@ export default function App() {
   const [tickers, setTickers] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [orderRefreshCount, setOrderRefreshCount] = useState(0);
+  const [feedOk, setFeedOk] = useState(true);
 
   // Fetch accounts on load and refresh periodically
   const loadAccounts = async () => {
@@ -26,8 +27,10 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAccounts(data);
-        if (data.length > 0 && !activeAccountId) {
-          setActiveAccountId(data[0].id);
+        // Functional update: the polling interval holds a stale closure, so reading
+        // activeAccountId directly here used to reset the user's selection every 3s.
+        if (data.length > 0) {
+          setActiveAccountId((cur) => (cur && data.some((a) => a.id === cur) ? cur : data[0].id));
         }
       }
     } catch (err) {
@@ -39,6 +42,7 @@ export default function App() {
   const loadTickers = async () => {
     try {
       const res = await fetch('/api/market/tickers');
+      setFeedOk(res.ok);
       if (res.ok) {
         const data = await res.json();
         setTickers(data);
@@ -47,6 +51,7 @@ export default function App() {
         }
       }
     } catch (err) {
+      setFeedOk(false);
       console.error('Failed to load tickers', err);
     }
   };
@@ -56,7 +61,7 @@ export default function App() {
     loadAccounts();
     loadTickers();
     const interval = setInterval(() => {
-      if (!isMounted) return;
+      if (!isMounted || document.hidden) return; // don't poll from background tabs
       loadTickers();
       loadAccounts();
     }, 3000);
@@ -82,6 +87,7 @@ export default function App() {
       accounts={accounts}
       activeAccountId={activeAccountId}
       setActiveAccountId={setActiveAccountId}
+      feedOk={feedOk}
     >
       {activeTab === 'dashboard' && (
         <Dashboard

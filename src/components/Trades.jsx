@@ -320,6 +320,8 @@ export default function Trades({ accounts, activeAccountId }) {
                                 ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
                                 : o.status === 'OPEN'
                                 ? 'text-cyan-400 bg-cyan-500/10 border border-cyan-500/20'
+                                : o.status === 'REJECTED'
+                                ? 'text-rose-400 bg-rose-500/10 border border-rose-500/20'
                                 : 'text-slate-400 bg-slate-800 border border-slate-700'
                             }`}
                           >

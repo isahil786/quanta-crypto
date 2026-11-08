@@ -68,7 +68,7 @@ export default function Screener({ tickers, onSelectPair }) {
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Real-time ranking of the most active momentum crypto pairs based on 24h price change, trading volume, and breakout proximity.
+            Top 100 liquid USDT pairs ranked by 24h price change (minimum $1M daily turnover); volume and range position shown for context.
           </p>
         </div>
 
@@ -136,7 +136,7 @@ export default function Screener({ tickers, onSelectPair }) {
           <span>Showing {processed.length} of {tickers.length} live momentum coins</span>
           <span className="font-mono text-[11px] text-emerald-400 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            Live WebSocket/REST sync active
+            REST refresh every 3s
           </span>
         </div>
         <div className="overflow-x-auto">

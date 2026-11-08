@@ -8,12 +8,18 @@ const STABLE_PAIRS = new Set([
 
 let cachedTop100 = [];
 let lastFetchTime = 0;
+let inflight = null; // dedupes concurrent fetches
+export const feedStatus = { stale: false, lastError: null, lastSuccess: 0 };
+
+// Legacy Binance leveraged tokens (BTCUP, ETHDOWN, ...). Matching a bare "UP" suffix
+// would wrongly drop real coins such as JUP, so the base must be a known major.
+const LEVERAGED_RE = /^(BTC|ETH|BNB|ADA|XRP|LINK|DOT|LTC|EOS|TRX|XLM|BCH|SXP|FIL|AAVE|SUSHI|UNI|1INCH|YFI)(UP|DOWN|BULL|BEAR)USDT$/;
 const CACHE_TTL_MS = 3000; // 3 seconds refresh
 
 /**
  * Determine decimal precision based on price magnitude
  */
-function getPrecision(price) {
+export function getPrecision(price) {
   if (price >= 1000) return 2;
   if (price >= 1) return 2;
   if (price >= 0.01) return 4;
@@ -29,7 +35,14 @@ export async function getLiveTop100MomentumCoins() {
   if (cachedTop100.length > 0 && now - lastFetchTime < CACHE_TTL_MS) {
     return cachedTop100;
   }
+  if (inflight) return inflight;
+  inflight = fetchTop100(now).finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
 
+async function fetchTop100(now) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -48,9 +61,7 @@ export async function getLiveTop100MomentumCoins() {
       const sym = t.symbol;
       if (!sym.endsWith('USDT')) return false;
       if (STABLE_PAIRS.has(sym)) return false;
-      if (sym.includes('UPUSDT') || sym.includes('DOWNUSDT') || sym.includes('BULL') || sym.includes('BEAR')) {
-        return false;
-      }
+      if (LEVERAGED_RE.test(sym)) return false;
       const quoteVol = parseFloat(t.quoteVolume);
       const price = parseFloat(t.lastPrice);
       // Require at least $1M 24h turnover and price > 0 to filter out dead illiquid pairs
@@ -100,7 +111,7 @@ export async function getLiveTop100MomentumCoins() {
     });
 
     // Sort by momentum score (highest momentum gainers / strongest market movers first)
-    scored.sort((a, b) => b.change24h - a.change24h);
+    scored.sort((a, b) => b.change24h - a.change24h); // ranked by 24h % change; momentumScore is exposed for clients
 
     // Take top 100 and assign rank
     const top100 = scored.slice(0, 100).map((coin, index) => ({
@@ -110,9 +121,14 @@ export async function getLiveTop100MomentumCoins() {
 
     cachedTop100 = top100;
     lastFetchTime = now;
+    feedStatus.stale = false;
+    feedStatus.lastError = null;
+    feedStatus.lastSuccess = now;
     return top100;
   } catch (err) {
     console.error('Binance Live Data Fetch Error:', err.message);
+    feedStatus.stale = true;
+    feedStatus.lastError = err.message;
     if (cachedTop100.length > 0) return cachedTop100;
     throw err;
   }

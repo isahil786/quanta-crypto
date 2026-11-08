@@ -103,7 +103,10 @@ export default function TestApi() {
             <span>Interactive Exchange API Console</span>
           </h1>
           <p className="text-xs text-slate-400">
-            Inspect live request signing (Ed25519 for CoinSwitch, HMAC for Delta & CoinDCX), headers, and raw JSON payloads.
+            Preview request signing (Ed25519 for CoinSwitch, HMAC for Delta & CoinDCX), headers, and JSON payloads.
+          </p>
+          <p className="text-[11px] text-amber-300 mt-1">
+            Simulated: nothing is sent to the exchange. Signatures use built-in sample keys and responses are generated from this app's paper-trading state.
           </p>
         </div>
 

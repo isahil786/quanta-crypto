@@ -11,10 +11,11 @@ import {
 } from 'lucide-react';
 
 export default function Positions({ accounts, activeAccountId }) {
-  const [positions, setPositions] = useState([]);
-  const [holdings, setHoldings] = useState([]);
+  const [allPositions, setPositions] = useState([]);
+  const [allHoldings, setHoldings] = useState([]);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [scope, setScope] = useState('active'); // 'active' | 'all'
 
   const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
   const isCoinSwitchSpot = activeAccount?.broker === 'coinswitch' && activeAccount?.segment === 'SPOT';
@@ -55,7 +56,7 @@ export default function Positions({ accounts, activeAccountId }) {
       if (!res.ok) throw new Error(data.error || 'Failed to close position');
       setNotice({
         type: 'success',
-        text: `Position on ${symbol} closed at mark price! Generated closing trade fill.`,
+        text: data.message || `Position on ${symbol} closed.`,
       });
       fetchData();
     } catch (err) {
@@ -63,12 +64,35 @@ export default function Positions({ accounts, activeAccountId }) {
     }
   };
 
+  const inScope = (x) => scope === 'all' || x.accountId === activeAccount?.id;
+  const positions = allPositions.filter(inScope);
+  const holdings = allHoldings.filter(inScope);
+  const accountName = (id) => accounts.find((a) => a.id === id)?.accountName || id;
+  const scopedAccounts = scope === 'all' ? accounts : accounts.filter((a) => a.id === activeAccount?.id);
+
   // Aggregate Portfolio Stats
-  const totalHoldingsValue = holdings.reduce((sum, h) => sum + (h.valueUSDT || 0), 0);
+  // Account equity reflects fees and realised PnL; holdings alone stay at the starting balance
+  const totalHoldingsValue = scopedAccounts.reduce((sum, a) => sum + (a.totalEquityUSDT || 0), 0);
   const totalUnrealizedPnl = positions.reduce((sum, p) => sum + (p.unrealizedPnl || 0), 0);
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Scope toggle */}
+      <div className="flex items-center justify-end gap-1 text-xs">
+        <span className="text-slate-500 mr-1">Show:</span>
+        {[['active', 'Active account'], ['all', 'All accounts']].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setScope(id)}
+            className={`px-3 py-1 rounded-md border transition-colors ${
+              scope === id ? 'bg-slate-800 text-emerald-400 border-slate-700' : 'text-slate-400 border-transparent hover:text-slate-200'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* KPI Overview */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
@@ -79,7 +103,7 @@ export default function Positions({ accounts, activeAccountId }) {
           <div className="mt-2 text-xl font-bold font-mono text-white tabular-nums">
             ${totalHoldingsValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
-          <span className="text-[11px] text-slate-500 mt-1">Across 3 Connected Exchanges</span>
+          <span className="text-[11px] text-slate-500 mt-1">Paper equity ({scope === 'all' ? `${accounts.length} accounts` : 'active account'})</span>
         </div>
 
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
@@ -188,7 +212,7 @@ export default function Positions({ accounts, activeAccountId }) {
               {positions.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-8 text-center text-slate-500 font-sans">
-                    No active futures positions. Place a leveraged order on Delta Exchange or CoinDCX to open a position.
+                    No active positions{scope === 'active' ? ' for this account' : ''}. Place a leveraged order on Delta Exchange or CoinDCX to open one.
                   </td>
                 </tr>
               ) : (
@@ -198,7 +222,7 @@ export default function Positions({ accounts, activeAccountId }) {
                     <tr key={pos.id} className="hover:bg-slate-800/30 transition-colors">
                       <td className="py-3 px-4 font-sans">
                         <div className="font-bold text-white">{pos.symbol}</div>
-                        <div className="text-[11px] text-slate-400 capitalize">{pos.broker}</div>
+                        <div className="text-[11px] text-slate-400">{scope === 'all' ? accountName(pos.accountId) : <span className="capitalize">{pos.broker}</span>}</div>
                       </td>
                       <td className="py-3 px-4">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -280,7 +304,7 @@ export default function Positions({ accounts, activeAccountId }) {
                     </span>
                     <span>{h.name}</span>
                   </td>
-                  <td className="py-3 px-4 font-sans text-slate-300 capitalize">{h.broker}</td>
+                  <td className="py-3 px-4 font-sans text-slate-300">{scope === 'all' ? accountName(h.accountId) : <span className="capitalize">{h.broker}</span>}</td>
                   <td className="py-3 px-4 text-right text-slate-200">{h.free.toLocaleString()}</td>
                   <td className="py-3 px-4 text-right text-slate-500">{h.locked.toLocaleString()}</td>
                   <td className="py-3 px-4 text-right text-white font-semibold">{h.total.toLocaleString()}</td>

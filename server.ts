@@ -20,7 +20,10 @@ import {
   gttRules,
   mirrorConfig,
 } from './server/state.js';
+import { uid, mask, isPositiveNumber } from './server/util.js';
+import { checkMargin, settleOrderFill } from './server/positions.js';
 import {
+  feedStatus,
   getLiveTop100MomentumCoins,
   getLiveOrderBookDepth,
   getLiveRecentTrades,
@@ -28,6 +31,8 @@ import {
 } from './server/binance.js';
 import {
   botsState,
+  startBotLoop,
+  seedGridInventory,
   generateGridRungs,
   calculateOptimalGridParams,
 } from './server/bots.js';
@@ -43,15 +48,30 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
 
-// Helper: strip secrets before returning accounts to UI
+// Optional shared-secret auth. Set API_TOKEN to require `Authorization: Bearer <token>`
+// (or `x-api-token`) on every /api request. Strongly recommended whenever HOST is not loopback.
+const API_TOKEN = process.env.API_TOKEN || '';
+app.use('/api', (req, res, next) => {
+  if (!API_TOKEN) return next();
+  const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const supplied = bearer || (req.headers['x-api-token'] as string) || '';
+  if (supplied === API_TOKEN) return next();
+  res.status(401).json({ error: 'Unauthorized' });
+});
+
+// Helper: never return credentials to the UI (only the masked key)
 function sanitizeAccount(acc) {
-  const { apiSecret, ...safe } = acc;
-  return safe;
+  const { apiSecret, apiKey, ...safe } = acc;
+  return { ...safe, hasCredentials: Boolean(apiKey && apiSecret) };
 }
+
+const num = (v) => Number(v);
+const VALID_SIDES = new Set(['BUY', 'SELL']);
+const VALID_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
 
 // -------------------------------------------------------------
 // 1. Meta Endpoints
@@ -65,6 +85,8 @@ app.get('/api/meta/brokers', async (req, res) => {
       cryptoPairs: liveCoins.slice(0, 20),
       totalMomentumCoinsCount: liveCoins.length,
       dataSource: 'Binance Live Public API v3',
+      feedStale: feedStatus.stale,
+      feedLastError: feedStatus.lastError,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -80,21 +102,27 @@ app.get('/api/accounts', (req, res) => {
 
 app.post('/api/accounts', (req, res) => {
   try {
-    const { broker, accountName, apiKey, apiSecret, segment = 'SPOT' } = req.body;
+    const { broker, accountName, apiKey = '', apiSecret = '', segment = 'SPOT' } = req.body;
     if (!broker || !accountName) {
       return res.status(400).json({ error: 'Broker and Account Name are required' });
     }
+    if (!BROKERS[broker]) {
+      return res.status(400).json({ error: `Unknown broker ${broker}` });
+    }
+    if (!['SPOT', 'FUTURES'].includes(segment)) {
+      return res.status(400).json({ error: 'Segment must be SPOT or FUTURES' });
+    }
 
     const newAccount = {
-      id: `acc-${broker}-${Date.now().toString(36)}`,
+      id: uid(`acc-${broker}`),
       broker,
-      accountName,
+      accountName: String(accountName).slice(0, 60),
       segment,
       status: 'ACTIVE',
-      mode: 'SANDBOX',
-      apiKeyMasked: apiKey ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}` : 'demo_key',
-      apiKey: apiKey || 'demo_key',
-      apiSecret: apiSecret || 'demo_secret',
+      mode: 'PAPER', // orders are simulated; nothing is sent to the exchange
+      apiKeyMasked: apiKey ? mask(apiKey) : 'Not configured',
+      apiKey,
+      apiSecret,
       createdAt: new Date().toISOString(),
       totalEquityUSDT: 10000.0,
       availableMarginUSDT: 10000.0,
@@ -103,13 +131,11 @@ app.post('/api/accounts', (req, res) => {
     };
 
     accounts.push(newAccount);
-
-    // Also initialize holding for USDT
     holdings.push({
       accountId: newAccount.id,
       broker: newAccount.broker,
       asset: 'USDT',
-      name: 'Tether Wallet',
+      name: 'Paper USDT balance',
       free: 10000.0,
       locked: 0,
       total: 10000.0,
@@ -124,18 +150,22 @@ app.post('/api/accounts', (req, res) => {
 });
 
 app.post('/api/accounts/test-connection', async (req, res) => {
-  const { broker, apiKey, apiSecret, segment = 'SPOT' } = req.body;
+  const { accountId, segment: bodySegment } = req.body;
+  const stored = accountId ? accounts.find((a) => a.id === accountId) : null;
+  const broker = stored?.broker || req.body.broker;
+  const apiKey = stored?.apiKey ?? req.body.apiKey ?? '';
+  const apiSecret = stored?.apiSecret ?? req.body.apiSecret ?? '';
+  const segment = stored?.segment || bodySegment || 'SPOT';
 
   if (!broker) {
     return res.status(400).json({ error: 'Broker selection required' });
   }
-
   const brokerMeta = BROKERS[broker];
   if (!brokerMeta) {
     return res.status(404).json({ error: `Unknown broker ${broker}` });
   }
 
-  // Real network ping to measure live exchange latency
+  // 1) Network reachability of the exchange (public endpoint)
   let pingTarget = 'https://coinswitch.co';
   if (broker === 'delta') pingTarget = 'https://api.india.delta.exchange/v2/products';
   if (broker === 'coindcx') pingTarget = 'https://public.coindcx.com/exchange/v1/ping';
@@ -144,32 +174,45 @@ app.post('/api/accounts/test-connection', async (req, res) => {
   let reachable = true;
   try {
     await fetch(pingTarget, { method: 'GET', signal: AbortSignal.timeout(3000) });
-  } catch (netErr) {
+  } catch {
     reachable = false;
   }
-  const latencyMs = Math.max(Date.now() - startPing, 12);
+  const latencyMs = Date.now() - startPing;
 
-  // Compute actual signed headers using exchange signing algorithms
+  // 2) Check that a request can be signed with the stored credentials (does NOT call the exchange)
+  const credentialsPresent = Boolean(apiKey && apiSecret);
   let headers = {};
-  if (broker === 'coinswitch') {
-    headers = signCoinSwitchRequest('GET', '/trade/api/v2/user/profile', null, apiSecret);
-  } else if (broker === 'delta') {
-    headers = signDeltaRequest('GET', '/v2/profile', '', '', apiSecret, apiKey);
-  } else if (broker === 'coindcx') {
-    headers = signCoinDCXRequest({ timestamp: Date.now() }, apiSecret, apiKey);
+  let signingOk = false;
+  if (credentialsPresent) {
+    try {
+      if (broker === 'coinswitch') headers = signCoinSwitchRequest('GET', '/trade/api/v2/user/profile', null, apiSecret);
+      else if (broker === 'delta') headers = signDeltaRequest('GET', '/v2/profile', '', '', apiSecret, apiKey);
+      else if (broker === 'coindcx') headers = signCoinDCXRequest({ timestamp: Date.now() }, apiSecret, apiKey);
+      signingOk = true;
+    } catch {
+      signingOk = false;
+    }
   }
+  // Never echo real signatures back to the browser
+  const redactedHeaders = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k, /sig/i.test(k) || /key/i.test(k) ? '[redacted]' : v])
+  );
 
+  const status = !reachable ? 'NETWORK_OFFLINE' : !credentialsPresent ? 'NO_CREDENTIALS' : signingOk ? 'REACHABLE_KEYS_UNVERIFIED' : 'SIGNING_FAILED';
   res.json({
-    success: true,
+    success: reachable && credentialsPresent && signingOk,
     broker: brokerMeta.displayName,
-    status: reachable ? 'AUTHENTICATED' : 'NETWORK_OFFLINE',
+    status,
     latencyMs,
     segment,
     capabilities: brokerMeta.capabilities,
-    generatedHeaders: headers,
-    message: reachable
-      ? `Connected to ${brokerMeta.displayName} (${segment}) with ${latencyMs}ms roundtrip latency`
-      : `Exchange server reached with fallback`,
+    generatedHeaders: redactedHeaders,
+    verified: false,
+    message: !reachable
+      ? `${brokerMeta.displayName} is not reachable from this server.`
+      : !credentialsPresent
+      ? 'Exchange reachable, but no API key/secret is configured for this account.'
+      : 'Exchange reachable and a request can be signed with the stored keys. Keys are NOT verified: this app does not make authenticated exchange calls (paper trading only).',
   });
 });
 
@@ -179,6 +222,15 @@ app.delete('/api/accounts/:id', (req, res) => {
     return res.status(404).json({ error: 'Account not found' });
   }
   const removed = accounts.splice(index, 1)[0];
+  if (removed.isMaster) {
+    accounts.splice(index, 0, removed);
+    return res.status(409).json({ error: 'The master account cannot be removed while mirror trading references it.' });
+  }
+  // Remove everything that referenced the account
+  const drop = (arr) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i].accountId === removed.id) arr.splice(i, 1); };
+  [positions, holdings, gttRules].forEach(drop);
+  for (const b of botsState.bots) if (b.accountId === removed.id && b.status === 'RUNNING') b.status = 'CANCELLED';
+  mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
   res.json({ success: true, removedId: removed.id });
 });
 
@@ -323,174 +375,139 @@ app.get('/api/orders', (req, res) => {
 
 app.post('/api/orders', async (req, res) => {
   try {
-    const {
-      accountId,
-      symbol,
-      side,
-      orderType,
-      price,
-      size,
-      leverage = 1,
-      tpPrice,
-      slPrice,
-      timeInForce = 'GTC',
-    } = req.body;
+    const { accountId, symbol, tpPrice, slPrice, timeInForce = 'GTC' } = req.body;
+    const side = String(req.body.side || '').toUpperCase();
+    const orderType = String(req.body.orderType || '').toUpperCase();
+    const leverage = req.body.leverage === undefined ? 1 : num(req.body.leverage);
+    const size = num(req.body.size);
 
     const account = accounts.find((a) => a.id === accountId);
-    if (!account) {
-      return res.status(404).json({ error: 'Target trading account not found' });
+    if (!account) return res.status(404).json({ error: 'Target trading account not found' });
+    if (!symbol || typeof symbol !== 'string') return res.status(400).json({ error: 'symbol is required' });
+    if (!VALID_SIDES.has(side)) return res.status(400).json({ error: 'side must be BUY or SELL' });
+    if (!VALID_ORDER_TYPES.has(orderType)) return res.status(400).json({ error: 'orderType must be MARKET or LIMIT' });
+    if (!isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
+    if (!Number.isFinite(leverage) || leverage < 1 || leverage > 125) {
+      return res.status(400).json({ error: 'leverage must be between 1 and 125' });
+    }
+    if (orderType === 'LIMIT' && !isPositiveNumber(req.body.price)) {
+      return res.status(400).json({ error: 'A positive limit price is required for LIMIT orders' });
     }
 
     const brokerId = account.broker;
-
-    // Gate exchange capability:
-    // CoinSwitch Spot is LIMIT only!
+    // CoinSwitch Spot is LIMIT only
     try {
-      validateBrokerOrder(brokerId, { orderType, price, size }, account);
+      validateBrokerOrder(brokerId, { orderType, price: req.body.price, size }, account);
     } catch (valErr) {
       return res.status(400).json({ error: valErr.message });
     }
 
-    // Lookup real-time live price from Binance
+    // Live reference price. Unknown symbols are rejected rather than filled at a made-up price.
     const liveCoins = await getLiveTop100MomentumCoins();
     const livePair = liveCoins.find((p) => p.symbol === symbol);
-    const liveMarketPrice = livePair ? livePair.price : (Number(price) || 100);
+    if (!livePair) {
+      return res.status(400).json({ error: `No live price for ${symbol}; it is not in the tracked Binance top-100 USDT list.` });
+    }
+    const liveMarketPrice = livePair.price;
+    const execPrice = orderType === 'MARKET' ? liveMarketPrice : num(req.body.price);
+    const feePct = BROKERS[brokerId]?.capabilities?.feeEstimatePercent ?? 0.1;
 
-    const execPrice = orderType === 'MARKET' ? liveMarketPrice : Number(price);
-    const orderSize = Number(size);
-    const orderValue = execPrice * orderSize;
-    const feeRate = BROKERS[brokerId]?.capabilities?.feeEstimatePercent || 0.1;
-    const fee = Number(((orderValue * feeRate) / 100).toFixed(4));
+    const newOrder: any = {
+      id: uid('ord'),
+      accountId: account.id,
+      broker: brokerId,
+      symbol,
+      side,
+      orderType,
+      price: execPrice,
+      size,
+      filledSize: 0,
+      status: 'OPEN',
+      timeInForce,
+      leverage,
+      tpPrice: tpPrice ? num(tpPrice) : undefined,
+      slPrice: slPrice ? num(slPrice) : undefined,
+      timestamp: new Date().toISOString(),
+      fee: 0,
+    };
 
-    // Determine status: MARKET orders fill immediately; LIMIT orders fill if price meets market
+    // Marketable now? (MARKET, or a limit that crosses the book). Resting limits are filled
+    // later by the background engine when the live price reaches them.
     const shouldFill =
       orderType === 'MARKET' ||
       (side === 'BUY' && execPrice >= liveMarketPrice) ||
       (side === 'SELL' && execPrice <= liveMarketPrice);
 
-    const newOrder = {
-      id: `ord-${Date.now().toString(36)}`,
-      accountId: account.id,
-      broker: brokerId,
-      symbol,
-      side: side.toUpperCase(),
-      orderType: orderType.toUpperCase(),
-      price: execPrice,
-      size: orderSize,
-      filledSize: shouldFill ? orderSize : 0,
-      status: shouldFill ? 'FILLED' : 'OPEN',
-      timeInForce,
-      leverage: Number(leverage),
-      tpPrice: tpPrice ? Number(tpPrice) : undefined,
-      slPrice: slPrice ? Number(slPrice) : undefined,
-      timestamp: new Date().toISOString(),
-      fee: shouldFill ? fee : 0,
-    };
-
-    const MAX_ORDERS = 10000;
-    if (orders.length >= MAX_ORDERS) {
-      orders.splice(-100);
-    }
-    orders.unshift(newOrder);
-
-    // If filled, create a trade fill record and update position/holdings
     if (shouldFill) {
-      const fillRecord = {
-        id: `trd-${Date.now().toString(36)}`,
-        orderId: newOrder.id,
-        accountId: account.id,
-        broker: brokerId,
-        symbol,
-        side: newOrder.side,
-        price: execPrice,
-        size: orderSize,
-        value: orderValue,
-        fee,
-        timestamp: new Date().toISOString(),
-      };
-      trades.unshift(fillRecord);
-
-      // If futures segment or leverage > 1, create/update position
-      if (account.segment === 'FUTURES' || leverage > 1) {
-        const existingPos = positions.find(
-          (p) => p.accountId === account.id && p.symbol === symbol
-        );
-        if (existingPos) {
-          const oldSize = existingPos.size;
-          existingPos.size = Number((oldSize + orderSize).toFixed(4));
-          existingPos.entryPrice = Number(((existingPos.entryPrice * oldSize + execPrice * orderSize) / existingPos.size).toFixed(2));
-          existingPos.markPrice = liveMarketPrice;
-        } else {
-          positions.push({
-            id: `pos-${Date.now().toString(36)}`,
-            accountId: account.id,
-            broker: brokerId,
-            symbol,
-            side: side === 'BUY' ? 'LONG' : 'SHORT',
-            size: orderSize,
-            entryPrice: execPrice,
-            markPrice: liveMarketPrice,
-            liquidationPrice:
-              side === 'BUY'
-                ? Number((execPrice * (1 - 0.9 / leverage)).toFixed(2))
-                : Number((execPrice * (1 + 0.9 / leverage)).toFixed(2)),
-            margin: Number((orderValue / leverage).toFixed(2)),
-            leverage: Number(leverage),
-            unrealizedPnl: 0,
-            pnlPercent: 0,
-            tpPrice: tpPrice ? Number(tpPrice) : undefined,
-            slPrice: slPrice ? Number(slPrice) : undefined,
-          });
-        }
+      const check = checkMargin(account, newOrder, execPrice, feePct);
+      if (!check.ok) {
+        return res.status(400).json({
+          error: check.reason,
+        });
       }
+      // A marketable limit order fills at the market, not at its (better-for-the-broker) limit
+      settleOrderFill(account, newOrder, orderType === 'MARKET' ? execPrice : liveMarketPrice, feePct);
+      newOrder.price = execPrice;
     }
 
-    // Mirror trading execution: If this order was placed on the Master account, replicate!
-    if (account.isMaster && mirrorConfig.enabled) {
+    orders.unshift(newOrder);
+    if (orders.length > 10000) orders.length = 10000;
+
+    // Mirror trading: replicate only master orders that actually filled
+    if (account.isMaster && mirrorConfig.enabled && newOrder.status === 'FILLED') {
       for (const replica of mirrorConfig.replicas) {
-        if (!replica.active) continue;
+        if (!replica.active || replica.accountId === account.id) continue;
         const replicaAcc = accounts.find((a) => a.id === replica.accountId);
         if (!replicaAcc) continue;
 
-        const replicaSize = Number((orderSize * replica.multiplier).toFixed(4));
-        let replicaOrderType = orderType;
+        const replicaSize = Number((size * replica.multiplier).toFixed(8));
+        const logBase = { id: uid('mlog'), timestamp: new Date().toISOString(), masterOrder: `${newOrder.id} (${symbol} ${side} ${size})`, targetAccount: replicaAcc.accountName };
+        if (!isPositiveNumber(replicaSize)) {
+          mirrorConfig.logs.unshift({ ...logBase, status: 'SKIPPED', details: 'Replica size rounded to zero.' });
+          continue;
+        }
 
-        // CoinSwitch Spot adaptation: Force LIMIT order
-        let adaptedPrice = execPrice;
+        let replicaOrderType = orderType;
         let adaptationNote = '';
         if (replicaAcc.broker === 'coinswitch' && replicaAcc.segment === 'SPOT' && orderType === 'MARKET') {
           replicaOrderType = 'LIMIT';
-          adaptedPrice = liveMarketPrice;
           adaptationNote = 'Adapted MARKET order to LIMIT for CoinSwitch Spot compliance.';
         }
-
-        const repOrder = {
-          id: `ord-rep-${Date.now().toString(36)}-${replicaAcc.id.slice(-4)}`,
+        const replicaLev = Math.min(leverage, replicaAcc.broker === 'delta' ? 100 : 20);
+        const repOrder: any = {
+          id: uid('ord-rep'),
           accountId: replicaAcc.id,
           broker: replicaAcc.broker,
           symbol,
-          side: side.toUpperCase(),
-          orderType: replicaOrderType.toUpperCase(),
-          price: adaptedPrice,
+          side,
+          orderType: replicaOrderType,
+          price: liveMarketPrice,
           size: replicaSize,
-          filledSize: replicaSize,
-          status: 'FILLED',
+          filledSize: 0,
+          status: 'OPEN',
           timeInForce: 'GTC',
-          leverage: Math.min(Number(leverage), replicaAcc.broker === 'delta' ? 100 : 20),
+          leverage: replicaLev,
           timestamp: new Date().toISOString(),
-          fee: Number(((adaptedPrice * replicaSize * 0.001)).toFixed(4)),
+          fee: 0,
+          notes: `Mirror of ${newOrder.id}`,
         };
-        orders.unshift(repOrder);
 
+        // Note: replicas fill at the same simulated reference price as the master, so there is no
+        // slippage to enforce; maxSlippagePercent is kept in the config for a future live mode.
+        const check = checkMargin(replicaAcc, repOrder, liveMarketPrice, BROKERS[replicaAcc.broker]?.capabilities?.feeEstimatePercent ?? 0.1);
+        if (!check.ok) {
+          mirrorConfig.logs.unshift({ ...logBase, status: 'REJECTED', details: check.reason });
+          continue;
+        }
+        settleOrderFill(replicaAcc, repOrder, liveMarketPrice, BROKERS[replicaAcc.broker]?.capabilities?.feeEstimatePercent ?? 0.1);
+        orders.unshift(repOrder);
         mirrorConfig.logs.unshift({
-          id: `mlog-${Date.now().toString(36)}`,
-          timestamp: new Date().toISOString(),
-          masterOrder: `${newOrder.id} (${symbol} ${side} ${orderSize})`,
-          targetAccount: replicaAcc.accountName,
+          ...logBase,
           status: adaptationNote ? 'ADAPTED' : 'EXECUTED',
-          details: `${adaptationNote} Mirrored ${replicaSize} ${symbol} @ ${adaptedPrice} (${replica.multiplier}x).`,
+          details: `${adaptationNote} Mirrored ${replicaSize} ${symbol} @ ${liveMarketPrice} (${replica.multiplier}x).`.trim(),
         });
       }
+      if (mirrorConfig.logs.length > 500) mirrorConfig.logs.length = 500;
     }
 
     res.status(201).json(newOrder);
@@ -501,11 +518,14 @@ app.post('/api/orders', async (req, res) => {
 
 app.put('/api/orders/:id', (req, res) => {
   const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (order.status !== 'OPEN') {
+    return res.status(409).json({ error: `Only OPEN orders can be modified (this order is ${order.status}).` });
   }
 
   const { price, size } = req.body;
+  if (price !== undefined && !isPositiveNumber(price)) return res.status(400).json({ error: 'price must be a positive number' });
+  if (size !== undefined && !isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
   const brokerMeta = BROKERS[order.broker];
 
   // CoinSwitch modify order: Cancel + Replace pattern
@@ -513,9 +533,9 @@ app.put('/api/orders/:id', (req, res) => {
     order.status = 'CANCELLED';
     const replacedOrder = {
       ...order,
-      id: `ord-replace-${Date.now().toString(36)}`,
-      price: price !== undefined ? Number(price) : order.price,
-      size: size !== undefined ? Number(size) : order.size,
+      id: uid('ord-replace'),
+      price: price !== undefined ? num(price) : order.price,
+      size: size !== undefined ? num(size) : order.size,
       status: 'OPEN',
       timestamp: new Date().toISOString(),
       notes: `Replaced from ${order.id} via CoinSwitch cancel-and-replace`,
@@ -529,21 +549,16 @@ app.put('/api/orders/:id', (req, res) => {
     });
   }
 
-  // Delta Exchange / CoinDCX: Direct edit
-  if (price !== undefined) order.price = Number(price);
-  if (size !== undefined) order.size = Number(size);
-
-  res.json({
-    action: 'MODIFIED',
-    message: `Order updated directly on ${brokerMeta.displayName}`,
-    order,
-  });
+  if (price !== undefined) order.price = num(price);
+  if (size !== undefined) order.size = num(size);
+  res.json({ action: 'MODIFIED', message: `Order updated on ${brokerMeta.displayName}`, order });
 });
 
 app.delete('/api/orders/:id', (req, res) => {
   const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (order.status !== 'OPEN') {
+    return res.status(409).json({ error: `Only OPEN orders can be cancelled (this order is ${order.status}).` });
   }
   order.status = 'CANCELLED';
   res.json({ success: true, message: `Order ${order.id} cancelled successfully`, order });
@@ -580,29 +595,43 @@ app.get('/api/positions', async (req, res) => {
   }
 });
 
-app.post('/api/positions/:id/close', (req, res) => {
-  const index = positions.findIndex((p) => p.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Position not found' });
-  }
-  const pos = positions.splice(index, 1)[0];
+app.post('/api/positions/:id/close', async (req, res) => {
+  const pos = positions.find((p) => p.id === req.params.id);
+  if (!pos) return res.status(404).json({ error: 'Position not found' });
+  const account = accounts.find((a) => a.id === pos.accountId);
+  if (!account) return res.status(404).json({ error: 'Position account not found' });
 
-  // Create closing trade
-  trades.unshift({
-    id: `trd-close-${Date.now().toString(36)}`,
-    orderId: `ord-close-${pos.id}`,
+  let price = pos.markPrice;
+  try {
+    const live = (await getLiveTop100MomentumCoins()).find((c) => c.symbol === pos.symbol);
+    if (live) price = live.price;
+  } catch {
+    /* fall back to last stored mark price */
+  }
+
+  const closing: any = {
+    id: uid('ord-close'),
     accountId: pos.accountId,
     broker: pos.broker,
     symbol: pos.symbol,
     side: pos.side === 'LONG' ? 'SELL' : 'BUY',
-    price: pos.markPrice,
+    orderType: 'MARKET',
+    price,
     size: pos.size,
-    value: pos.markPrice * pos.size,
-    fee: Number(((pos.markPrice * pos.size * 0.0005)).toFixed(4)),
+    leverage: pos.leverage,
+    timeInForce: 'IOC',
     timestamp: new Date().toISOString(),
-  });
+  };
+  const closedSnapshot = { ...pos };
+  const trade = settleOrderFill(account, closing, price, BROKERS[pos.broker]?.capabilities?.feeEstimatePercent ?? 0.1);
+  orders.unshift(closing);
 
-  res.json({ success: true, message: `Position on ${pos.symbol} closed successfully`, closedPosition: pos });
+  res.json({
+    success: true,
+    message: `Position on ${pos.symbol} closed at ${price}. Realised PnL: ${trade.realizedPnl} USDT`,
+    closedPosition: closedSnapshot,
+    realizedPnl: trade.realizedPnl,
+  });
 });
 
 app.get('/api/holdings', async (req, res) => {
@@ -646,15 +675,23 @@ app.post('/api/gtt', (req, res) => {
     });
   }
 
+  if (!symbol || !VALID_SIDES.has(String(side || 'SELL').toUpperCase())) {
+    return res.status(400).json({ error: 'symbol and a valid side (BUY/SELL) are required' });
+  }
+  if (!isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
+  if (!isPositiveNumber(triggerPrice) && !isPositiveNumber(targetPrice) && !isPositiveNumber(stopLossPrice)) {
+    return res.status(400).json({ error: 'Provide a triggerPrice, targetPrice or stopLossPrice' });
+  }
+
   const newRule = {
-    id: `gtt-${Date.now().toString(36)}`,
+    id: uid('gtt'),
     accountId: account.id,
     broker: account.broker,
     symbol,
     type: type || 'BRACKET_OCO',
-    triggerPrice: Number(triggerPrice),
+    triggerPrice: isPositiveNumber(triggerPrice) ? Number(triggerPrice) : undefined,
     condition: condition || 'ABOVE',
-    side: side || 'SELL',
+    side: String(side || 'SELL').toUpperCase(),
     size: Number(size),
     targetPrice: targetPrice ? Number(targetPrice) : undefined,
     stopLossPrice: stopLossPrice ? Number(stopLossPrice) : undefined,
@@ -671,6 +708,9 @@ app.delete('/api/gtt/:id', (req, res) => {
   const index = gttRules.findIndex((g) => g.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: 'GTT rule not found' });
+  }
+  if (gttRules[index].status !== 'ACTIVE') {
+    return res.status(409).json({ error: `Rule is already ${gttRules[index].status}` });
   }
   gttRules[index].status = 'CANCELLED';
   res.json({ success: true, message: 'GTT rule cancelled', rule: gttRules[index] });
@@ -695,6 +735,11 @@ app.post('/api/mirror/toggle', (req, res) => {
 
 app.post('/api/mirror/update-replica', (req, res) => {
   const { accountId, multiplier, active } = req.body;
+  if (!accounts.some((a) => a.id === accountId)) return res.status(404).json({ error: 'Account not found' });
+  if (accountId === mirrorConfig.masterAccountId) return res.status(400).json({ error: 'The master account cannot be a replica' });
+  if (multiplier !== undefined && !(Number(multiplier) > 0 && Number(multiplier) <= 100)) {
+    return res.status(400).json({ error: 'multiplier must be between 0 and 100' });
+  }
   const replica = mirrorConfig.replicas.find((r) => r.accountId === accountId);
   if (replica) {
     if (multiplier !== undefined) replica.multiplier = Number(multiplier);
@@ -721,7 +766,7 @@ app.get('/api/bots', (req, res) => {
     .reduce((sum, b) => sum + (b.realizedProfitUSDT || 0), 0);
   const totalVolume = botsState.bots.reduce((sum, b) => {
     if (b.type === 'TWAP_SLICER') return sum + (b.executedSize * (b.averageExecPrice || 100));
-    if (b.type === 'GRID_BOT') return sum + (b.completedRounds * (b.sizePerGrid || 1) * 3000);
+    if (b.type === 'GRID_BOT') return sum + (b.volumeUSDT || 0);
     return sum;
   }, 0);
 
@@ -793,13 +838,36 @@ app.post('/api/bots', async (req, res) => {
     if (!account) {
       return res.status(404).json({ error: 'Target account not found' });
     }
+    if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT'].includes(type)) {
+      return res.status(400).json({ error: 'type must be TWAP_SLICER, BREAKOUT_CHASER or GRID_BOT' });
+    }
+    if (!VALID_SIDES.has(String(side).toUpperCase())) {
+      return res.status(400).json({ error: 'side must be BUY or SELL' });
+    }
+    if (type === 'TWAP_SLICER' && !(isPositiveNumber(totalSize) && Number.isInteger(num(slicesCount)) && num(slicesCount) >= 1 && isPositiveNumber(intervalSeconds))) {
+      return res.status(400).json({ error: 'TWAP needs positive totalSize, intervalSeconds and an integer slicesCount >= 1' });
+    }
+    if (type === 'BREAKOUT_CHASER' && !(isPositiveNumber(triggerPrice) && isPositiveNumber(size))) {
+      return res.status(400).json({ error: 'Breakout needs positive triggerPrice and size' });
+    }
+    if (type === 'GRID_BOT') {
+      if (!(isPositiveNumber(lowerPrice) && num(upperPrice) > num(lowerPrice))) {
+        return res.status(400).json({ error: 'Grid needs 0 < lowerPrice < upperPrice' });
+      }
+      if (!(Number.isInteger(num(gridCount)) && num(gridCount) >= 2 && num(gridCount) <= 200) || !isPositiveNumber(sizePerGrid)) {
+        return res.status(400).json({ error: 'Grid needs an integer gridCount between 2 and 200 and a positive sizePerGrid' });
+      }
+    }
 
     const liveCoins = await getLiveTop100MomentumCoins();
     const liveCoin = liveCoins.find((c) => c.symbol === symbol);
-    const livePrice = liveCoin ? liveCoin.price : 100;
-    const precision = liveCoin ? liveCoin.precision : 2;
+    if (!liveCoin) {
+      return res.status(400).json({ error: `No live price for ${symbol}; it is not in the tracked Binance top-100 USDT list.` });
+    }
+    const livePrice = liveCoin.price;
+    const precision = liveCoin.precision;
 
-    const botId = `bot-${Date.now().toString(36)}`;
+    const botId = uid('bot');
     let newBot: any = {
       id: botId,
       type,
@@ -807,7 +875,7 @@ app.post('/api/bots', async (req, res) => {
       accountId: account.id,
       broker: account.broker,
       symbol,
-      side,
+      side: String(side).toUpperCase(),
       status: 'RUNNING',
       createdAt: new Date().toISOString(),
       logs: [
@@ -862,11 +930,16 @@ app.post('/api/bots', async (req, res) => {
         completedRounds: 0,
       };
 
+      const seed = seedGridInventory(newBot, account, livePrice);
+      if (!seed.ok) {
+        return res.status(400).json({ error: `Cannot fund grid starting inventory: ${seed.reason}` });
+      }
+      const seeded = seed.qty;
       const buyRungsCount = generatedRungs.filter((r) => r.side === 'BUY').length;
       const sellRungsCount = generatedRungs.filter((r) => r.side === 'SELL').length;
       newBot.logs.unshift({
         time: new Date().toLocaleTimeString(),
-        text: `Optimized ${gridMode} ladder created: ${buyRungsCount} Buy rungs below $${livePrice}, ${sellRungsCount} Sell rungs above.`,
+        text: `${gridMode} ladder created: ${buyRungsCount} Buy rungs below $${livePrice}, ${sellRungsCount} Sell rungs above (starting inventory of ${seeded} ${symbol} bought at market).`,
       });
     }
 
@@ -882,6 +955,9 @@ app.post('/api/bots/:id/pause', (req, res) => {
   if (!bot) {
     return res.status(404).json({ error: 'Bot not found' });
   }
+  if (bot.status !== 'RUNNING' && bot.status !== 'PAUSED') {
+    return res.status(409).json({ error: `A ${bot.status} bot cannot be paused or resumed.` });
+  }
   bot.status = bot.status === 'RUNNING' ? 'PAUSED' : 'RUNNING';
   bot.logs.unshift({
     time: new Date().toLocaleTimeString(),
@@ -895,10 +971,13 @@ app.post('/api/bots/:id/stop', (req, res) => {
   if (!bot) {
     return res.status(404).json({ error: 'Bot not found' });
   }
+  if (bot.status === 'CANCELLED' || bot.status === 'COMPLETED') {
+    return res.status(409).json({ error: `Bot is already ${bot.status}.` });
+  }
   bot.status = 'CANCELLED';
   bot.logs.unshift({
     time: new Date().toLocaleTimeString(),
-    text: 'Bot stopped by user. Open child orders cancelled.',
+    text: 'Bot stopped by user. No further simulated fills will occur; fills already made are kept.',
   });
   res.json({ success: true, status: bot.status, bot });
 });
@@ -917,6 +996,12 @@ app.delete('/api/bots/:id', (req, res) => {
 // -------------------------------------------------------------
 app.post('/api/test-endpoints', (req, res) => {
   const { broker, endpoint, method = 'GET', body = {} } = req.body;
+  if (typeof endpoint !== 'string' || !endpoint.startsWith('/')) {
+    return res.status(400).json({ error: 'endpoint must be a string starting with /' });
+  }
+  if (!['GET', 'POST', 'PUT', 'DELETE'].includes(String(method).toUpperCase())) {
+    return res.status(400).json({ error: 'method must be GET, POST, PUT or DELETE' });
+  }
   const meta = BROKERS[broker] || BROKERS.coinswitch;
 
   let headers = {};
@@ -979,6 +1064,7 @@ app.post('/api/test-endpoints', (req, res) => {
     baseUrl: (meta as any).baseUrl || (meta as any).spotBaseUrl,
     signatureInfo,
     requestHeaders: headers,
+    simulated: true, // nothing is sent to the exchange; headers use built-in sample keys
     responseStatus: 200,
     responseData,
   });
@@ -1003,8 +1089,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`QuantaCrypto Terminal running at http://0.0.0.0:${PORT}`);
+  startBotLoop();
+  const HOST = process.env.HOST || '127.0.0.1';
+  app.listen(PORT, HOST, () => {
+    console.log(`QuantaCrypto Terminal (paper trading) running at http://${HOST}:${PORT}`);
+    if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
+      console.warn('WARNING: listening on a non-loopback address without API_TOKEN set. The API is unauthenticated.');
+    }
   });
 }
 

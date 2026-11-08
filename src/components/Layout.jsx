@@ -12,7 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 
-export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, children }) {
+export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, feedOk = true, children }) {
   const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
 
   const navLinks = [
@@ -101,8 +101,8 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
           )}
 
           <div className="flex items-center gap-2 text-xs text-slate-400 pl-2 border-l border-slate-800 hidden md:flex">
-            <span>Simulation Mode</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-500" title="Live Engine Connected" />
+            <span>Paper Trading</span>
+            <span className="w-2 h-2 rounded-full bg-amber-400" title="Orders are simulated; nothing is sent to the exchanges" />
           </div>
         </div>
       </header>
@@ -148,8 +148,10 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
           <span>CoinDCX (HMAC)</span>
         </div>
         <div className="flex items-center gap-2 font-mono tabular-nums text-slate-400 text-[11px]">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-emerald-400 font-bold">Public Binance API v3: Synchronized</span>
+          <span className={`w-2 h-2 rounded-full ${feedOk ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+          <span className={`font-bold ${feedOk ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {feedOk ? 'Public Binance API v3: Synchronized' : 'Binance price feed unavailable'}
+          </span>
         </div>
       </footer>
     </div>

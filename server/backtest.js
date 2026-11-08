@@ -1,6 +1,9 @@
 // Grid Bot Backtesting & Optimization Engine
 // Simulates walk-forward execution of volatility grid strategies using 100% real Binance historical klines
 
+// Significant-digit rounding: safe for sub-cent coins (toFixed(4) would collapse SHIB-style prices to 0)
+const rp = (x) => Number(Number(x).toPrecision(10));
+
 /**
  * Generate grid rungs between lower and upper bounds
  */
@@ -16,15 +19,18 @@ export function generateSimulationRungs({
   const count = Math.max(2, Math.min(parseInt(gridCount, 10) || 10, 50));
   const lower = Number(lowerPrice);
   const upper = Number(upperPrice);
+  if (!(lower > 0) || !(upper > lower)) {
+    throw new Error('Grid range invalid: upper price must be greater than lower price (both > 0).');
+  }
 
   if (gridMode === 'GEOMETRIC') {
     const ratio = Math.pow(upper / lower, 1 / count);
     for (let i = 0; i <= count; i++) {
-      const price = Number((lower * Math.pow(ratio, i)).toFixed(4));
+      const price = rp(lower * Math.pow(ratio, i));
       const isBuy = price < startPrice;
       const targetPrice = isBuy
-        ? Number((lower * Math.pow(ratio, i + 1)).toFixed(4))
-        : Number((lower * Math.pow(ratio, Math.max(0, i - 1))).toFixed(4));
+        ? rp(lower * Math.pow(ratio, i + 1))
+        : rp(lower * Math.pow(ratio, Math.max(0, i - 1)));
 
       rungs.push({
         id: `rung-${i}`,
@@ -42,11 +48,11 @@ export function generateSimulationRungs({
     // ARITHMETIC
     const step = (upper - lower) / count;
     for (let i = 0; i <= count; i++) {
-      const price = Number((lower + i * step).toFixed(4));
+      const price = rp(lower + i * step);
       const isBuy = price < startPrice;
       const targetPrice = isBuy
-        ? Number((price + step).toFixed(4))
-        : Number((price - step).toFixed(4));
+        ? rp(price + step)
+        : rp(price - step);
 
       rungs.push({
         id: `rung-${i}`,
@@ -121,15 +127,20 @@ export function simulateGridBot({
 
   const equityHistory = [];
   const tradeLogs = [];
+  let profitableSells = 0;
+  const equitySeries = [];
 
   // Walk forward candle by candle
   for (let t = 0; t < klines.length; t++) {
     const candle = klines[t];
     const { high, low, close, closeTime } = candle;
+    // A rung that flips in this candle must not flip back in the same candle: we cannot know the
+    // intra-candle order of high and low, so assuming a free round trip would overstate results.
+    const flippedThisCandle = new Set();
 
     // 1. Process BUY rungs (when candle dip touches or crosses down to limit price)
     for (const rung of rungs) {
-      if (rung.side === 'BUY' && low <= rung.price) {
+      if (rung.side === 'BUY' && low <= rung.price && !flippedThisCandle.has(rung.id)) {
         const orderCost = rung.price * rung.size;
         const fee = orderCost * feeRate;
 
@@ -147,9 +158,10 @@ export function simulateGridBot({
           rung.side = 'SELL';
           rung.targetPrice = prevPrice;
           rung.price = sellLevel;
+          flippedThisCandle.add(rung.id);
 
-          if (tradeLogs.length < 150) {
-            tradeLogs.unshift({
+          {
+            tradeLogs.push({
               id: `bt-trade-${t}-${buyFills}`,
               time: new Date(closeTime).toISOString(),
               timeLabel: new Date(closeTime).toLocaleString(),
@@ -169,7 +181,7 @@ export function simulateGridBot({
 
     // 2. Process SELL rungs (when candle rally touches or crosses up to limit price)
     for (const rung of rungs) {
-      if (rung.side === 'SELL' && high >= rung.price) {
+      if (rung.side === 'SELL' && high >= rung.price && !flippedThisCandle.has(rung.id)) {
         if (coinBalance >= rung.size * 0.8) {
           const sellSize = Math.min(coinBalance, rung.size);
           const revenue = rung.price * sellSize;
@@ -195,9 +207,11 @@ export function simulateGridBot({
           rung.side = 'BUY';
           rung.targetPrice = prevPrice;
           rung.price = buyLevel;
+          flippedThisCandle.add(rung.id);
+          if (spreadGain > 0) profitableSells += 1;
 
-          if (tradeLogs.length < 150) {
-            tradeLogs.unshift({
+          {
+            tradeLogs.push({
               id: `bt-trade-${t}-${sellFills}`,
               time: new Date(closeTime).toISOString(),
               timeLabel: new Date(closeTime).toLocaleString(),
@@ -226,6 +240,8 @@ export function simulateGridBot({
       maxDrawdownPercent = currentDdPercent;
       maxDrawdownUSDT = currentDd;
     }
+
+    equitySeries.push(currentEquity);
 
     // Sample equity curve points
     if (t % Math.max(1, Math.floor(klines.length / 50)) === 0 || t === klines.length - 1) {
@@ -256,13 +272,28 @@ export function simulateGridBot({
   const outperformance = netReturnPercent - buyAndHoldReturn;
 
   const totalTrades = buyFills + sellFills;
-  const winRate = buyFills > 0 ? (completedSweeps / buyFills) * 100 : 0;
-  const profitFactor = totalFeesPaid > 0 ? (cumulativeRealizedProfit / totalFeesPaid) : 5.0;
+  // Share of sell fills that realised a positive net spread (cannot exceed 100%)
+  const winRate = sellFills > 0 ? (profitableSells / sellFills) * 100 : 0;
+  // Realised spread profit per unit of fees paid (0 when nothing traded)
+  const profitFactor = totalFeesPaid > 0 ? cumulativeRealizedProfit / totalFeesPaid : 0;
 
-  // Simple Sharpe proxy
-  const dailyReturnEst = netReturnPercent / durationDays;
-  const volatilityEst = Math.max(maxDrawdownPercent / Math.sqrt(durationDays), 1);
-  const sharpeRatio = Number(((dailyReturnEst / volatilityEst) * Math.sqrt(365)).toFixed(2));
+  // Sharpe from the per-candle equity curve, annualised with the real candle length
+  let sharpeRatio = 0;
+  if (equitySeries.length > 2) {
+    const rets = [];
+    for (let i = 1; i < equitySeries.length; i++) {
+      if (equitySeries[i - 1] > 0) rets.push(equitySeries[i] / equitySeries[i - 1] - 1);
+    }
+    const mean = rets.reduce((x, y) => x + y, 0) / (rets.length || 1);
+    const variance = rets.reduce((x, y) => x + (y - mean) ** 2, 0) / (rets.length || 1);
+    const sd = Math.sqrt(variance);
+    const candleMs = Math.max((endCandle.closeTime - startCandle.openTime) / klines.length, 1);
+    const periodsPerYear = (365 * 24 * 3600 * 1000) / candleMs;
+    sharpeRatio = sd > 0 ? (mean / sd) * Math.sqrt(periodsPerYear) : 0;
+  }
+  sharpeRatio = Number.isFinite(sharpeRatio) ? Number(sharpeRatio.toFixed(2)) : 0;
+  // APR extrapolated from a short window is unreliable; flag it for the UI
+  const aprReliable = durationDays >= 14;
 
   return {
     symbol,
@@ -285,7 +316,8 @@ export function simulateGridBot({
     completedSweeps,
     winRate: Number(winRate.toFixed(1)),
     profitFactor: Number(profitFactor.toFixed(2)),
-    sharpeRatio: isNaN(sharpeRatio) ? 1.5 : sharpeRatio,
+    sharpeRatio,
+    aprReliable,
     gridParams: {
       lowerPrice: lower,
       upperPrice: upper,
@@ -301,7 +333,7 @@ export function simulateGridBot({
       profitCaptured: Number((r.profitCaptured || 0).toFixed(2)),
     })),
     equityHistory,
-    tradeLogs: tradeLogs.slice(0, 50),
+    tradeLogs: tradeLogs.slice(-50).reverse(), // 50 most recent, newest first
   };
 }
 
@@ -309,16 +341,20 @@ export function simulateGridBot({
  * Multi-Strategy Grid Optimizer (Parameter Sweep)
  * Evaluates multiple strategies against the historical dataset to discover the highest Sharpe and net yield
  */
-export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }) {
+export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000, feeRate = 0.0005 }) {
   if (!klines || klines.length < 5) return [];
 
-  const startPrice = klines[0].open;
-  const currentPrice = klines[klines.length - 1].close;
+  // Out-of-sample: choose grid ranges from the first 60% of candles and score them on the last 40%.
+  // (Ranges built from the same window that is scored would use perfect hindsight.)
+  const canSplit = klines.length >= 20;
+  const split = canSplit ? Math.floor(klines.length * 0.6) : klines.length;
+  const trainKlines = klines.slice(0, split);
+  const testKlines = canSplit ? klines.slice(split) : klines;
 
-  // Find min and max price over historical period
+  // Find min and max price over the training period
   let minPrice = Infinity;
   let maxPrice = -Infinity;
-  for (const k of klines) {
+  for (const k of trainKlines) {
     if (k.low < minPrice) minPrice = k.low;
     if (k.high > maxPrice) maxPrice = k.high;
   }
@@ -327,8 +363,8 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
   const strategyConfigs = [
     {
       id: 'tight-scalp',
-      name: 'Ultra-Tight Volatility Scalper',
-      description: 'High-frequency micro-spread capture with tight range boundaries and dense rungs',
+      name: 'Tight Arithmetic Scalper',
+      description: 'Dense arithmetic rungs inside the inner part of the training range (2% inset each side)',
       lowerPrice: Number((minPrice * 1.02).toFixed(2)),
       upperPrice: Number((maxPrice * 0.98).toFixed(2)),
       gridCount: 20,
@@ -336,8 +372,8 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
     },
     {
       id: 'balanced-institutional',
-      name: 'Balanced Institutional Grid (Recommended)',
-      description: 'Optimal balance of volatility buffers, geometric fee efficiency, and sweep velocity',
+      name: 'Balanced Geometric Grid',
+      description: 'Geometric rungs with a 3% buffer beyond the training range',
       lowerPrice: Number((minPrice * 0.97).toFixed(2)),
       upperPrice: Number((maxPrice * 1.03).toFixed(2)),
       gridCount: 14,
@@ -346,7 +382,7 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
     {
       id: 'wide-swing',
       name: 'Wide Swing Horizon Grid',
-      description: 'Wide safety cushions absorbing macro dips and multi-week expansion phases',
+      description: 'Wide range (8% below / 10% above training range) to tolerate large swings',
       lowerPrice: Number((minPrice * 0.92).toFixed(2)),
       upperPrice: Number((maxPrice * 1.10).toFixed(2)),
       gridCount: 10,
@@ -355,7 +391,7 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
     {
       id: 'high-density-arithmetic',
       name: 'High-Density Arithmetic Grid',
-      description: 'Fixed dollar step grid maximizing round trips during sideways channel chop',
+      description: 'Fixed-step arithmetic grid with 24 rungs for sideways markets',
       lowerPrice: Number((minPrice * 0.98).toFixed(2)),
       upperPrice: Number((maxPrice * 1.02).toFixed(2)),
       gridCount: 24,
@@ -364,7 +400,7 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
     {
       id: 'asymmetric-momentum',
       name: 'Asymmetric Bullish Momentum Grid',
-      description: 'Upward-biased grid structure geared to capture momentum breakouts with trailing profit',
+      description: 'Wider upside range (+15%) so the grid keeps working if price breaks out upward',
       lowerPrice: Number((minPrice * 0.95).toFixed(2)),
       upperPrice: Number((maxPrice * 1.15).toFixed(2)),
       gridCount: 16,
@@ -377,8 +413,9 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
     try {
       const sim = simulateGridBot({
         symbol,
-        klines,
+        klines: testKlines,
         initialCapital,
+        feeRate,
         lowerPrice: config.lowerPrice,
         upperPrice: config.upperPrice,
         gridCount: config.gridCount,
@@ -387,6 +424,7 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000 }
 
       results.push({
         ...config,
+        outOfSample: canSplit,
         netProfit: sim.totalNetProfit,
         netReturnPercent: sim.netReturnPercent,
         annualizedApr: sim.annualizedApr,

@@ -34,12 +34,8 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
       const res = await fetch('/api/accounts/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          broker: acc.broker,
-          apiKey: acc.apiKey,
-          apiSecret: acc.apiSecret,
-          segment: acc.segment,
-        }),
+        // Credentials stay on the server: send only the account id
+        body: JSON.stringify({ accountId: acc.id, broker: acc.broker, segment: acc.segment }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Connection failed');
@@ -78,7 +74,7 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
 
       setNotice({
         type: 'success',
-        text: `Account "${data.accountName}" connected successfully to ${data.broker.toUpperCase()}!`,
+        text: `Account "${data.accountName}" added as a paper-trading account on ${data.broker.toUpperCase()}.`,
       });
       setShowAddModal(false);
       setAccountName('');
@@ -162,9 +158,12 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
             </span>
             <span className="text-emerald-400 font-bold">Latency: {testResult.latencyMs}ms</span>
           </div>
+          {testResult.message && (
+            <p className="mt-2 font-sans text-[11px] text-amber-300">{testResult.message}</p>
+          )}
           <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <span className="text-slate-500 text-[11px] font-sans font-medium">Authentication Headers Sent:</span>
+              <span className="text-slate-500 text-[11px] font-sans font-medium">Signed header preview (redacted, not sent to the exchange):</span>
               <pre className="mt-1 p-2 bg-slate-950 rounded border border-slate-800 text-[10px] text-slate-300 overflow-x-auto">
                 {JSON.stringify(testResult.generatedHeaders, null, 2)}
               </pre>

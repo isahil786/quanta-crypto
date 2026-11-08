@@ -89,7 +89,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
       setBacktestResult(data);
       setNotice({
         type: 'success',
-        text: `Backtest completed on ${data.candlesCount} real Binance candles! Net Return: +${data.totalNetProfit} USDT (${data.netReturnPercent}% / ~${data.annualizedApr}% APR).`,
+        text: `Backtest completed on ${data.candlesCount} real Binance candles! Net Return: +${data.totalNetProfit} USDT (${data.netReturnPercent}%${data.aprReliable ? ` / ~${data.annualizedApr}% APR` : ' over a short window; APR not shown'}). Simulated: past results do not predict future returns.`,
       });
     } catch (err) {
       setNotice({ type: 'error', text: err.message });
@@ -496,7 +496,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
                 +{backtestResult.totalNetProfit} USDT
               </div>
               <div className="text-[11px] text-emerald-400 font-mono mt-0.5">
-                Backtested APR: ~{backtestResult.annualizedApr}%
+                Backtested APR: {backtestResult.aprReliable ? `~${backtestResult.annualizedApr}%` : 'n/a (window under 14 days)'}
               </div>
             </div>
             <div className="relative z-10 mt-2 pt-2 border-t border-emerald-500/20 flex justify-between text-[11px] text-slate-400">

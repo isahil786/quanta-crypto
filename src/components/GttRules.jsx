@@ -240,6 +240,8 @@ export default function GttRules({ accounts, activeAccountId }) {
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                         r.status === 'ACTIVE'
                           ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                          : r.status === 'TRIGGERED'
+                          ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
                           : 'text-slate-400 bg-slate-800'
                       }`}>
                         {r.status}
