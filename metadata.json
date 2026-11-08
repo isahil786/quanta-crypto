@@ -1,0 +1,6 @@
+{
+  "name": "QuantaCrypto Terminal",
+  "description": "Multi-exchange crypto trading terminal supporting CoinSwitch, Delta Exchange, and CoinDCX with order routing, positions, portfolio, GTT rules, and mirror trading.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
