@@ -135,8 +135,10 @@ export async function runBotsBackgroundCycle() {
     // 1. TWAP Slicer Execution
     if (bot.type === 'TWAP_SLICER') {
       if (now >= bot.nextExecutionTime) {
+        const remainingSize = Number((bot.totalSize - bot.executedSize).toFixed(4));
         const sliceSize = Number((bot.totalSize / bot.slicesCount).toFixed(4));
-        const newExecutedSize = Number((bot.executedSize + sliceSize).toFixed(4));
+        const finalSliceSize = remainingSize < sliceSize ? remainingSize : sliceSize;
+        const newExecutedSize = Number((bot.executedSize + finalSliceSize).toFixed(4));
         bot.completedSlices += 1;
         bot.executedSize = newExecutedSize;
         bot.averageExecPrice = livePrice;
@@ -152,13 +154,13 @@ export async function runBotsBackgroundCycle() {
           side: bot.side,
           orderType: 'LIMIT',
           price: livePrice,
-          size: sliceSize,
-          filledSize: sliceSize,
+          size: finalSliceSize,
+          filledSize: finalSliceSize,
           status: 'FILLED',
           timeInForce: 'IOC',
           leverage: 1,
           timestamp: new Date().toISOString(),
-          fee: Number(((livePrice * sliceSize * 0.0005)).toFixed(4)),
+          fee: Number(((livePrice * finalSliceSize * 0.0005)).toFixed(4)),
         });
 
         trades.unshift({
@@ -169,15 +171,15 @@ export async function runBotsBackgroundCycle() {
           symbol: bot.symbol,
           side: bot.side,
           price: livePrice,
-          size: sliceSize,
-          value: livePrice * sliceSize,
-          fee: Number(((livePrice * sliceSize * 0.0005)).toFixed(4)),
+          size: finalSliceSize,
+          value: livePrice * finalSliceSize,
+          fee: Number(((livePrice * finalSliceSize * 0.0005)).toFixed(4)),
           timestamp: new Date().toISOString(),
         });
 
         bot.logs.unshift({
           time: new Date().toLocaleTimeString(),
-          text: `Slice #${bot.completedSlices}/${bot.slicesCount} filled: ${sliceSize} ${bot.symbol} @ $${livePrice.toLocaleString()}`,
+          text: `Slice #${bot.completedSlices}/${bot.slicesCount} filled: ${finalSliceSize} ${bot.symbol} @ $${livePrice.toLocaleString()}`,
         });
 
         if (bot.completedSlices >= bot.slicesCount || bot.executedSize >= bot.totalSize) {
@@ -306,7 +308,7 @@ export async function runBotsBackgroundCycle() {
           const soldAt = rung.price;
           const spreadGain = Math.max((soldAt - boughtAt) * rung.orderSize, 0);
           const feeEst = (soldAt + boughtAt) * rung.orderSize * 0.0005;
-          const netProfit = Number(Math.max(spreadGain - feeEst, 0.5).toFixed(2));
+          const netProfit = Number((spreadGain - feeEst).toFixed(2));
 
           rung.profitCaptured = Number(((rung.profitCaptured || 0) + netProfit).toFixed(2));
           bot.realizedProfitUSDT = Number(((bot.realizedProfitUSDT || 0) + netProfit).toFixed(2));

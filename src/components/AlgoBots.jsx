@@ -72,9 +72,16 @@ export default function AlgoBots({ accounts, tickers }) {
   };
 
   useEffect(() => {
+    let isMounted = true;
     fetchBots();
-    const interval = setInterval(fetchBots, 3000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (!isMounted) return;
+      fetchBots();
+    }, 3000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   // Update default breakout trigger & grid ranges when symbol changes
@@ -94,8 +101,11 @@ export default function AlgoBots({ accounts, tickers }) {
     setIsOptimizing(true);
     try {
       const res = await fetch(`/api/bots/optimize-grid?symbol=${symbol}`);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to optimize grid');
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       setGridLower(data.lowerBound.toString());
       setGridUpper(data.upperBound.toString());

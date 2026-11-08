@@ -19,7 +19,7 @@ export default function App() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [orderRefreshCount, setOrderRefreshCount] = useState(0);
 
-  // Fetch accounts on load
+  // Fetch accounts on load and refresh periodically
   const loadAccounts = async () => {
     try {
       const res = await fetch('/api/accounts');
@@ -52,10 +52,18 @@ export default function App() {
   };
 
   useEffect(() => {
+    let isMounted = true;
     loadAccounts();
     loadTickers();
-    const interval = setInterval(loadTickers, 3000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (!isMounted) return;
+      loadTickers();
+      loadAccounts();
+    }, 3000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const handleOrderPlaced = () => {
@@ -102,7 +110,6 @@ export default function App() {
 
       {activeTab === 'trades' && (
         <Trades
-          key={orderRefreshCount}
           accounts={accounts}
           activeAccountId={activeAccountId}
         />
@@ -110,7 +117,6 @@ export default function App() {
 
       {activeTab === 'positions' && (
         <Positions
-          key={orderRefreshCount}
           accounts={accounts}
           activeAccountId={activeAccountId}
         />

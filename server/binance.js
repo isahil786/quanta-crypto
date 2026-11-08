@@ -31,7 +31,12 @@ export async function getLiveTop100MomentumCoins() {
   }
 
   try {
-    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr', {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
     if (!res.ok) {
       throw new Error(`Binance HTTP ${res.status}: ${res.statusText}`);
     }
@@ -119,7 +124,16 @@ export async function getLiveTop100MomentumCoins() {
 export async function getLiveOrderBookDepth(symbol = 'BTCUSDT', limit = 15) {
   try {
     const formattedSym = symbol.toUpperCase().replace('/', '');
-    const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${formattedSym}&limit=${limit}`);
+    if (!/^[A-Z0-9]{5,12}$/.test(formattedSym)) {
+      throw new Error(`Invalid symbol: ${symbol}`);
+    }
+    const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 5000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(formattedSym)}&limit=${cleanLimit}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
     if (!res.ok) {
       throw new Error(`Binance depth error: ${res.statusText}`);
     }
@@ -178,7 +192,16 @@ export async function getLiveOrderBookDepth(symbol = 'BTCUSDT', limit = 15) {
 export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
   try {
     const formattedSym = symbol.toUpperCase().replace('/', '');
-    const res = await fetch(`https://api.binance.com/api/v3/trades?symbol=${formattedSym}&limit=${limit}`);
+    if (!/^[A-Z0-9]{5,12}$/.test(formattedSym)) {
+      throw new Error(`Invalid symbol: ${symbol}`);
+    }
+    const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 1000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(`https://api.binance.com/api/v3/trades?symbol=${encodeURIComponent(formattedSym)}&limit=${cleanLimit}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
     if (!res.ok) {
       throw new Error(`Binance trades error: ${res.statusText}`);
     }
@@ -189,12 +212,12 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
       size: parseFloat(t.qty),
       quoteQty: parseFloat(t.quoteQty),
       time: t.time,
-      isBuyerMaker: t.isBuyerMaker, // if true, seller initiated (Sell), if false, buyer initiated (Buy)
+      isBuyerMaker: t.isBuyerMaker,
       side: t.isBuyerMaker ? 'SELL' : 'BUY',
     })).reverse();
   } catch (err) {
     console.error(`Failed to fetch live trades for ${symbol}:`, err.message);
-    return [];
+    throw err;
   }
 }
 
@@ -205,10 +228,17 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
 export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit = 500) {
   try {
     const formattedSym = symbol.toUpperCase().replace('/', '');
+    if (!/^[A-Z0-9]{5,12}$/.test(formattedSym)) {
+      throw new Error(`Invalid symbol: ${symbol}`);
+    }
     const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 10), 1000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const res = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${formattedSym}&interval=${interval}&limit=${cleanLimit}`
+      `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(formattedSym)}&interval=${encodeURIComponent(interval)}&limit=${cleanLimit}`,
+      { signal: controller.signal },
     );
+    clearTimeout(timeout);
     if (!res.ok) {
       throw new Error(`Binance klines error: ${res.statusText}`);
     }

@@ -141,11 +141,12 @@ export function simulateGridBot({
           rung.fillsCount += 1;
           rung.totalVolume += orderCost;
 
-          // Flip to SELL at targetPrice
+          // Flip to SELL at targetPrice (higher sell level), target becomes re-entry buy price
           const prevPrice = rung.price;
+          const sellLevel = rung.targetPrice;
           rung.side = 'SELL';
           rung.targetPrice = prevPrice;
-          rung.price = rung.targetPrice;
+          rung.price = sellLevel;
 
           if (tradeLogs.length < 150) {
             tradeLogs.unshift({
@@ -188,11 +189,12 @@ export function simulateGridBot({
           cumulativeRealizedProfit += spreadGain;
           rung.profitCaptured = Number(((rung.profitCaptured || 0) + spreadGain).toFixed(2));
 
-          // Flip to BUY at targetPrice
+          // Flip to BUY at targetPrice (lower buy level), target becomes re-entry sell price
           const prevPrice = rung.price;
+          const buyLevel = rung.targetPrice;
           rung.side = 'BUY';
           rung.targetPrice = prevPrice;
-          rung.price = rung.targetPrice;
+          rung.price = buyLevel;
 
           if (tradeLogs.length < 150) {
             tradeLogs.unshift({
@@ -254,7 +256,7 @@ export function simulateGridBot({
   const outperformance = netReturnPercent - buyAndHoldReturn;
 
   const totalTrades = buyFills + sellFills;
-  const winRate = completedSweeps > 0 ? 100 : 0; // Grid bot closed sweeps are strictly profitable spread captures
+  const winRate = buyFills > 0 ? (completedSweeps / buyFills) * 100 : 0;
   const profitFactor = totalFeesPaid > 0 ? (cumulativeRealizedProfit / totalFeesPaid) : 5.0;
 
   // Simple Sharpe proxy

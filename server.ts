@@ -387,6 +387,10 @@ app.post('/api/orders', async (req, res) => {
       fee: shouldFill ? fee : 0,
     };
 
+    const MAX_ORDERS = 10000;
+    if (orders.length >= MAX_ORDERS) {
+      orders.splice(-100);
+    }
     orders.unshift(newOrder);
 
     // If filled, create a trade fill record and update position/holdings
@@ -412,7 +416,10 @@ app.post('/api/orders', async (req, res) => {
           (p) => p.accountId === account.id && p.symbol === symbol
         );
         if (existingPos) {
-          existingPos.size += orderSize;
+          const oldSize = existingPos.size;
+          existingPos.size = Number((oldSize + orderSize).toFixed(4));
+          existingPos.entryPrice = Number(((existingPos.entryPrice * oldSize + execPrice * orderSize) / existingPos.size).toFixed(2));
+          existingPos.markPrice = liveMarketPrice;
         } else {
           positions.push({
             id: `pos-${Date.now().toString(36)}`,

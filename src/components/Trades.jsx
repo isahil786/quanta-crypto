@@ -40,9 +40,16 @@ export default function Trades({ accounts, activeAccountId }) {
   };
 
   useEffect(() => {
+    let isMounted = true;
     fetchOrdersAndTrades();
-    const interval = setInterval(fetchOrdersAndTrades, 5000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (!isMounted) return;
+      fetchOrdersAndTrades();
+    }, 5000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const handleCancelOrder = async (orderId, brokerName) => {

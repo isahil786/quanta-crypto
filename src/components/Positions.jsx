@@ -36,9 +36,16 @@ export default function Positions({ accounts, activeAccountId }) {
   };
 
   useEffect(() => {
+    let isMounted = true;
     fetchData();
-    const interval = setInterval(fetchData, 4000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (!isMounted) return;
+      fetchData();
+    }, 4000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const handleClosePosition = async (posId, symbol) => {
