@@ -24,12 +24,17 @@ import {
   getLiveTop100MomentumCoins,
   getLiveOrderBookDepth,
   getLiveRecentTrades,
+  getLiveKlines,
 } from './server/binance.js';
 import {
   botsState,
   generateGridRungs,
   calculateOptimalGridParams,
 } from './server/bots.js';
+import {
+  simulateGridBot,
+  optimizeGridStrategies,
+} from './server/backtest.js';
 
 dotenv.config();
 
@@ -208,6 +213,91 @@ app.get('/api/market/trades', async (req, res) => {
     res.json(tradesData);
   } catch (err) {
     res.status(500).json({ error: `Failed to fetch live Binance trades: ${err.message}` });
+  }
+});
+
+app.get('/api/market/klines', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    const interval = (req.query.interval as string) || '1h';
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 500;
+    const klines = await getLiveKlines(symbol, interval, limit);
+    res.json(klines);
+  } catch (err) {
+    res.status(500).json({ error: `Failed to fetch live Binance klines: ${err.message}` });
+  }
+});
+
+// -------------------------------------------------------------
+// Backtesting & Strategy Optimization Endpoints (100% Real Binance Data)
+// -------------------------------------------------------------
+app.post('/api/backtest/grid', async (req, res) => {
+  try {
+    const {
+      symbol = 'BTCUSDT',
+      interval = '1h',
+      limit = 300,
+      initialCapital = 1000,
+      lowerPrice,
+      upperPrice,
+      gridCount = 10,
+      gridMode = 'ARITHMETIC',
+      feeRate = 0.0005,
+    } = req.body;
+
+    const klines = await getLiveKlines(symbol, interval, limit);
+    if (!klines || klines.length < 5) {
+      return res.status(400).json({ error: 'Insufficient live Binance candles returned' });
+    }
+
+    const result = simulateGridBot({
+      symbol,
+      klines,
+      initialCapital,
+      lowerPrice,
+      upperPrice,
+      gridCount,
+      gridMode,
+      feeRate,
+    });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backtest/optimize', async (req, res) => {
+  try {
+    const {
+      symbol = 'BTCUSDT',
+      interval = '1h',
+      limit = 300,
+      initialCapital = 1000,
+    } = req.body;
+
+    const klines = await getLiveKlines(symbol, interval, limit);
+    if (!klines || klines.length < 5) {
+      return res.status(400).json({ error: 'Insufficient live Binance candles returned' });
+    }
+
+    const strategies = optimizeGridStrategies({
+      symbol,
+      klines,
+      initialCapital,
+    });
+
+    res.json({
+      symbol,
+      interval,
+      candlesTested: klines.length,
+      startPrice: klines[0].open,
+      endPrice: klines[klines.length - 1].close,
+      strategies,
+      winner: strategies.find((s) => s.isWinner) || strategies[0],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

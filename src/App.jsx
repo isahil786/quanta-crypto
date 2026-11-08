@@ -9,6 +9,7 @@ import Accounts from './components/Accounts.jsx';
 import Screener from './components/Screener.jsx';
 import TestApi from './components/TestApi.jsx';
 import AlgoBots from './components/AlgoBots.jsx';
+import Backtesting from './components/Backtesting.jsx';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -89,6 +90,13 @@ export default function App() {
         <AlgoBots
           accounts={accounts}
           tickers={tickers}
+        />
+      )}
+
+      {activeTab === 'backtest' && (
+        <Backtesting
+          tickers={tickers}
+          onDeployToLiveBot={() => setActiveTab('bots')}
         />
       )}
 

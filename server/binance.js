@@ -197,3 +197,35 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
     return [];
   }
 }
+
+/**
+ * Fetch live historical candles (klines) from Binance for any symbol
+ * Intervals supported: '15m', '30m', '1h', '2h', '4h', '1d'
+ */
+export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit = 500) {
+  try {
+    const formattedSym = symbol.toUpperCase().replace('/', '');
+    const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 10), 1000);
+    const res = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${formattedSym}&interval=${interval}&limit=${cleanLimit}`
+    );
+    if (!res.ok) {
+      throw new Error(`Binance klines error: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.map((k) => ({
+      openTime: k[0],
+      open: parseFloat(k[1]),
+      high: parseFloat(k[2]),
+      low: parseFloat(k[3]),
+      close: parseFloat(k[4]),
+      volume: parseFloat(k[5]),
+      closeTime: k[6],
+      quoteVolume: parseFloat(k[7]),
+      tradesCount: k[8],
+    }));
+  } catch (err) {
+    console.error(`Failed to fetch live klines for ${symbol}:`, err.message);
+    throw err;
+  }
+}

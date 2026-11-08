@@ -9,6 +9,7 @@ import {
   Server,
   TrendingUp,
   Bot,
+  Sparkles,
 } from 'lucide-react';
 
 export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, children }) {
@@ -17,6 +18,7 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
   const navLinks = [
     { id: 'dashboard', label: 'Terminal', icon: Activity },
     { id: 'bots', label: 'Algo Bots', icon: Bot },
+    { id: 'backtest', label: 'Backtesting', icon: Sparkles },
     { id: 'trades', label: 'Orders & Trades', icon: ArrowLeftRight },
     { id: 'positions', label: 'Positions & Balances', icon: Layers },
     { id: 'gtt', label: 'GTT Rules', icon: Sliders },
