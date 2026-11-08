@@ -89,7 +89,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
       setBacktestResult(data);
       setNotice({
         type: 'success',
-        text: `Backtest completed on ${data.candlesCount} real Binance candles! Net Return: +${data.totalNetProfit} USDT (${data.netReturnPercent}%${data.aprReliable ? ` / ~${data.annualizedApr}% APR` : ' over a short window; APR not shown'}). Simulated: past results do not predict future returns.`,
+        text: `Backtest completed on ${data.candlesCount} real Binance candles! Net Return: ${data.totalNetProfit >= 0 ? '+' : ''}${data.totalNetProfit} USDT (${data.netReturnPercent >= 0 ? '+' : ''}${data.netReturnPercent}%${data.aprReliable ? ` / ~${data.annualizedApr}% APR` : ' over a short window; APR not shown'}). Simulated: past results do not predict future returns.`,
       });
     } catch (err) {
       setNotice({ type: 'error', text: err.message });
@@ -130,7 +130,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
 
       setNotice({
         type: 'success',
-        text: `Grid Optimizer analyzed 5 strategic models over ${data.candlesTested} Binance bars. Top strategy: "${data.winner?.name}" with +${data.winner?.netReturnPercent}% return!`,
+        text: `Grid Optimizer analyzed 5 strategic models over ${data.candlesTested} Binance bars. Top strategy: "${data.winner?.name}" with ${data.winner?.netReturnPercent >= 0 ? '+' : ''}${data.winner?.netReturnPercent}% return!`,
       });
     } catch (err) {
       setNotice({ type: 'error', text: err.message });
@@ -488,12 +488,12 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
                 Net Realized Return
               </span>
               <span className="px-1.5 py-0.5 rounded bg-emerald-400/20 text-emerald-300 font-mono text-[10px] font-bold border border-emerald-400/30">
-                +{backtestResult.netReturnPercent}%
+                {backtestResult.netReturnPercent >= 0 ? '+' : ''}{backtestResult.netReturnPercent}%
               </span>
             </div>
             <div className="relative z-10 mt-2">
               <div className="text-2xl font-black font-mono tracking-tight bg-gradient-to-r from-emerald-200 via-emerald-400 to-teal-300 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(16,185,129,0.35)] tabular-nums">
-                +{backtestResult.totalNetProfit} USDT
+                {backtestResult.totalNetProfit >= 0 ? '+' : ''}{backtestResult.totalNetProfit} USDT
               </div>
               <div className="text-[11px] text-emerald-400 font-mono mt-0.5">
                 Backtested APR: {backtestResult.aprReliable ? `~${backtestResult.annualizedApr}%` : 'n/a (window under 14 days)'}
@@ -502,7 +502,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
             <div className="relative z-10 mt-2 pt-2 border-t border-emerald-500/20 flex justify-between text-[11px] text-slate-400">
               <span>Pure Spread Captured</span>
               <span className="text-emerald-300 font-bold font-mono">
-                +${backtestResult.cumulativeRealizedProfit} USDT
+                {(backtestResult.cumulativeRealizedProfit || 0) >= 0 ? '+' : ''}${backtestResult.cumulativeRealizedProfit} USDT
               </span>
             </div>
           </div>
@@ -665,7 +665,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
             <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80">
               <span className="text-[10px] text-slate-400">Grid Net Profit:</span>
               <div className="text-emerald-300 font-bold mt-0.5">
-                +${backtestResult.totalNetProfit} ({backtestResult.netReturnPercent}%)
+                {backtestResult.totalNetProfit >= 0 ? '+' : '-'}${Math.abs(backtestResult.totalNetProfit)} ({backtestResult.netReturnPercent >= 0 ? '+' : '-'}${Math.abs(backtestResult.netReturnPercent)}%)
               </div>
             </div>
             <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80">
@@ -794,9 +794,10 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
 
                         <td className="py-3 px-3">
                           <div className="font-bold text-emerald-400">
-                            +${strat.netProfit}
+                            {strat.netProfit >= 0 ? '+' : '-'}${Math.abs(strat.netProfit)}
                           </div>
-                          <span className="text-[10px] text-slate-400">+{strat.netReturnPercent}%</span>
+                          <span className="text-[10px] text-slate-400">                            {strat.netReturnPercent >= 0 ? '+' : '-'}${Math.abs(strat.netReturnPercent)}%
+</span>
                         </td>
 
                         <td className="py-3 px-3 text-emerald-300 font-bold">
@@ -891,7 +892,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
                     {hasProfit ? (
                       <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-400/20 text-emerald-200 border border-emerald-400/30 shadow-[0_0_8px_rgba(16,185,129,0.2)] flex items-center gap-1">
                         <Sparkles className="w-3 h-3 text-emerald-300" />
-                        <span>+${rung.profitCaptured} USDT</span>
+                        <span>{(rung.profitCaptured || 0) >= 0 ? '+' : ''}${rung.profitCaptured} USDT</span>
                       </span>
                     ) : (
                       <span className="text-[10px] text-slate-500 font-mono">0 spread gain</span>
@@ -956,7 +957,7 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
                     <td className="py-2 px-3">
                       {t.profit > 0 ? (
                         <span className="text-emerald-400 font-bold">
-                          +${t.profit}
+                          {(t.profit || 0) >= 0 ? '+' : ''}${t.profit}
                         </span>
                       ) : (
                         <span className="text-slate-600">—</span>

@@ -284,7 +284,8 @@ export default function AlgoBots({ accounts, tickers }) {
           
           <div className="relative z-10 mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-black font-mono tracking-tight bg-gradient-to-r from-emerald-200 via-emerald-400 to-teal-300 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(16,185,129,0.35)] tabular-nums">
-              +${botsData.stats?.totalRealizedProfit?.toFixed(2) || '0.00'}
+               {(botsData.stats?.totalRealizedProfit || 0) >= 0 ? '+' : ''}${botsData.stats?.totalRealizedProfit?.toFixed(2) || '0.00'}
+
             </span>
             <span className="text-xs font-mono font-bold text-emerald-400">USDT</span>
           </div>
@@ -468,7 +469,8 @@ export default function AlgoBots({ accounts, tickers }) {
                       <div>
                         <div className="text-[10px] text-slate-400 font-mono">Net Realized Profit</div>
                         <div className="text-2xl font-black font-mono tracking-tight bg-gradient-to-r from-emerald-200 via-emerald-400 to-teal-300 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(16,185,129,0.35)] tabular-nums">
-                          +${(bot.realizedProfitUSDT || 0).toFixed(2)}{' '}
+                           {(bot.realizedProfitUSDT || 0) >= 0 ? '+' : ''}${(bot.realizedProfitUSDT || 0).toFixed(2)}{' '}
+
                           <span className="text-xs text-emerald-400 font-bold">USDT</span>
                         </div>
                       </div>
@@ -517,6 +519,9 @@ export default function AlgoBots({ accounts, tickers }) {
                     {/* Range Summary */}
                     <div className="relative z-10 flex items-center justify-between text-[11px] pt-2 border-t border-emerald-500/20 text-slate-400 font-mono">
                       <span>Range: ${bot.lowerPrice?.toLocaleString()} - ${bot.upperPrice?.toLocaleString()}</span>
+                      <span className="text-slate-300">
+                        Live: ${bot.currentPrice?.toLocaleString() || bot.initialPrice?.toLocaleString()}
+                      </span>
                       <span className="text-slate-300">
                         <strong className="text-emerald-400">{buyRungs.length}B</strong> /{' '}
                         <strong className="text-rose-400">{sellRungs.length}S</strong>
@@ -643,7 +648,8 @@ export default function AlgoBots({ accounts, tickers }) {
                       <span>Ladder Harvest:</span>
                     </span>
                     <span className="text-emerald-300 font-bold font-mono">
-                      +${bot.realizedProfitUSDT?.toFixed(2) || '0.00'} USDT ({bot.completedRounds || 0} sweeps)
+                       {(bot.realizedProfitUSDT || 0) >= 0 ? '+' : ''}${(bot.realizedProfitUSDT || 0)?.toFixed(2) || '0.00'} USDT ({bot.completedRounds || 0} sweeps)
+
                     </span>
                   </div>
 
@@ -681,7 +687,9 @@ export default function AlgoBots({ accounts, tickers }) {
                             {(hasFills || hasProfit) && (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-emerald-400/20 text-emerald-300 border border-emerald-400/40 shadow-[0_0_8px_rgba(16,185,129,0.3)] flex items-center gap-1">
                                 <Sparkles className="w-2.5 h-2.5 text-emerald-300" />
-                                <span>+${(rung.profitCaptured || (rung.fillsCount * 0.85)).toFixed(2)} ({rung.fillsCount}x)</span>
+                                  <span>{(rung.profitCaptured || rung.fillsCount * 0.85) >= 0 ? '+' : ''}${(rung.profitCaptured || rung.fillsCount * 0.85).toFixed(2)} ({rung.fillsCount}x)</span>
+
+
                               </span>
                             )}
                           </div>

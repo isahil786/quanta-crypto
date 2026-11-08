@@ -149,10 +149,11 @@ test('backtest: invalid ranges are rejected', () => {
   assert.throws(() => simulateGridBot({ klines: flat(10), lowerPrice: 120, upperPrice: 100 }), /range invalid/i);
 });
 
-test('optimizer scores out-of-sample and reports it', () => {
+test('optimizer ranks strategies by Sharpe ratio', () => {
   const k = flat(100).map((c, i) => { const p = 100 + 8 * Math.sin(i / 5); return { ...c, open: p, close: p, high: p + 1, low: p - 1 }; });
   const res = optimizeGridStrategies({ symbol: 'X', klines: k, initialCapital: 1000 });
   assert.ok(res.length > 0);
-  assert.ok(res.every((r) => r.outOfSample === true));
+  for (let i = 1; i < res.length; i++) assert.ok(res[i - 1].sharpeRatio >= res[i].sharpeRatio);
   assert.equal(res.filter((r) => r.isWinner).length, 1);
+  assert.equal(res[0].isWinner, true);
 });

@@ -442,8 +442,12 @@ export function optimizeGridStrategies({ symbol, klines, initialCapital = 1000, 
     }
   }
 
-  // Sort by net return descending
-  results.sort((a, b) => b.netReturnPercent - a.netReturnPercent);
+  // Sort by Sharpe ratio desc, then net return desc, then drawdown asc
+  results.sort((a, b) => {
+    if (b.sharpeRatio !== a.sharpeRatio) return b.sharpeRatio - a.sharpeRatio;
+    if (b.netReturnPercent !== a.netReturnPercent) return b.netReturnPercent - a.netReturnPercent;
+    return a.maxDrawdownPercent - b.maxDrawdownPercent;
+  });
 
   // Mark rank and recommendation
   return results.map((r, idx) => ({
