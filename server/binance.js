@@ -1,4 +1,9 @@
-import { getLiveTop100MomentumCoins as okxTop100 } from './okx.js';
+import {
+  getLiveTop100MomentumCoins as okxTop100,
+  getLiveOrderBookDepth as okxDepth,
+  getLiveRecentTrades as okxTrades,
+  getLiveKlines as okxKlines,
+} from './okx.js';
 
 // Live Binance Market Data Engine
 // Pulls live 24hr tickers, live orderbook depth, and live trades for Top 100 Momentum Coins
@@ -234,6 +239,15 @@ export async function getLiveOrderBookDepth(symbol = 'BTCUSDT', limit = 15) {
     };
   } catch (err) {
     console.error(`Failed to fetch live depth for ${symbol}:`, err.message);
+    // Binance blocks Render IPs (HTTP 451): fall back to OKX in production.
+    if (process.env.NODE_ENV === 'production') {
+      try {
+        const okxDepthData = await okxDepth(symbol, limit);
+        return okxDepthData;
+      } catch (okxErr) {
+        console.error(`OKX depth fallback failed for ${symbol}:`, okxErr.message);
+      }
+    }
     throw err;
   }
 }
@@ -264,13 +278,21 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
     })).reverse();
   } catch (err) {
     console.error(`Failed to fetch live trades for ${symbol}:`, err.message);
+    // Binance blocks Render IPs (HTTP 451): fall back to OKX in production.
+    if (process.env.NODE_ENV === 'production') {
+      try {
+        const okxTradesData = await okxTrades(symbol, limit);
+        return okxTradesData;
+      } catch (okxErr) {
+        console.error(`OKX trades fallback failed for ${symbol}:`, okxErr.message);
+      }
+    }
     throw err;
   }
 }
 
 /**
  * Fetch live historical candles (klines) from Binance for any symbol
- * Intervals supported: '15m', '30m', '1h', '2h', '4h', '1d'
  */
 export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit = 500) {
   try {
@@ -299,6 +321,15 @@ export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit =
     }));
   } catch (err) {
     console.error(`Failed to fetch live klines for ${symbol}:`, err.message);
+    // Binance blocks Render IPs (HTTP 451): fall back to OKX in production.
+    if (process.env.NODE_ENV === 'production') {
+      try {
+        const okxKlinesData = await okxKlines(symbol, interval, limit);
+        return okxKlinesData;
+      } catch (okxErr) {
+        console.error(`OKX klines fallback failed for ${symbol}:`, okxErr.message);
+      }
+    }
     throw err;
   }
 }

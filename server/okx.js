@@ -159,3 +159,72 @@ export async function getLiveKlines(symbol = 'BTC-USDT', interval = '1H', limit 
     tradesCount: undefined,
   }));
 }
+
+/**
+ * Fetch live order book depth from OKX v5.
+ * Returns same shape as server/binance.js getLiveOrderBookDepth.
+ */
+export async function getLiveOrderBookDepth(symbol = 'BTC-USDT', limit = 15) {
+  const instId = normalizeSymbol(symbol);
+  const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 5000);
+  const res = await fetchOkx(`/api/v5/market/books?instId=${encodeURIComponent(instId)}&sz=${cleanLimit}`);
+  const json = await res.json();
+
+  if (json.code !== '0' || !Array.isArray(json.data)) {
+    throw new Error(`OKX depth error: ${json.msg || json.code}`);
+  }
+
+  const book = json.data[0];
+  const cumBid = 0;
+  const bids = (book.bids || []).map(([priceStr, sizeStr]) => ({
+    price: parseFloat(priceStr),
+    size: parseFloat(sizeStr),
+    total: Number((parseFloat(sizeStr)).toFixed(4)),
+  }));
+  const asks = (book.asks || []).map(([priceStr, sizeStr]) => ({
+    price: parseFloat(priceStr),
+    size: parseFloat(sizeStr),
+    total: Number((parseFloat(sizeStr)).toFixed(4)),
+  }));
+
+  const bestBid = bids[0]?.price || 0;
+  const bestAsk = asks[0]?.price || 0;
+  const spread = bestAsk > bestBid ? Number((bestAsk - bestBid).toFixed(4)) : 0;
+
+  return {
+    symbol: instId,
+    lastUpdateId: Number(book.ts || Date.now()),
+    bestBid,
+    bestAsk,
+    spread,
+    spreadPercent: bestBid > 0 ? Number(((spread / bestBid) * 100).toFixed(4)) : 0,
+    bids,
+    asks: asks.slice().reverse(),
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * Fetch live recent trades from OKX v5.
+ * Returns same shape as server/binance.js getLiveRecentTrades.
+ */
+export async function getLiveRecentTrades(symbol = 'BTC-USDT', limit = 20) {
+  const instId = normalizeSymbol(symbol);
+  const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 100);
+  const res = await fetchOkx(`/api/v5/market/trades?instId=${encodeURIComponent(instId)}&limit=${cleanLimit}`);
+  const json = await res.json();
+
+  if (json.code !== '0' || !Array.isArray(json.data)) {
+    throw new Error(`OKX trades error: ${json.msg || json.code}`);
+  }
+
+  return json.data.map((t) => ({
+    id: t.tradeId || t.side,
+    price: parseFloat(t.px),
+    size: parseFloat(t.sz),
+    quoteQty: parseFloat(t.px) * parseFloat(t.sz),
+    time: Number(t.ts),
+    isBuyerMaker: t.side === 'sell',
+    side: t.side === 'buy' ? 'BUY' : 'SELL',
+  })).reverse();
+}
