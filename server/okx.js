@@ -51,8 +51,11 @@ async function fetchOkx(urlPath, init = {}) {
 }
 
 function normalizeSymbol(symbol) {
-  const sym = symbol.toUpperCase().replace('/', '-');
-  // OKX instId uses BASE-QUOTE (e.g. BTC-USDT)
+  let sym = symbol.toUpperCase().replace('/', '');
+  // OKX instId uses BASE-QUOTE (e.g. BTC-USDT). Binance passes BASEQUOTE (e.g. BTCUSDT).
+  if (sym.endsWith('USDT') && !sym.includes('-')) {
+    sym = sym.slice(0, -4) + '-USDT';
+  }
   return sym;
 }
 
