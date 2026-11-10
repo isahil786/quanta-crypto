@@ -1167,6 +1167,12 @@ const binanceWsBySymbol = new Map<string, WebSocket>();
 const wsClients = new Set<WebSocket>();
 const symbolBotCounts = new Map<string, number>();
 
+// OKX WebSocket fallback (Binance blocks Render IPs with HTTP 451).
+let okxWs: WebSocket | null = null;
+let okxConnecting = false;
+const okxSubscribedSymbols = new Set<string>();
+const okxPendingResubscribe = new Set<string>();
+
 function broadcast(message: any) {
   const payload = JSON.stringify(message);
   for (const client of wsClients) {
@@ -1232,7 +1238,127 @@ function ensureBinanceWs(symbol: string) {
 
   bws.onerror = (err) => {
     console.error(`[WS] Binance ticker error for ${sym}:`, (err as Error).message);
+    // Binance blocks Render IPs (HTTP 451 / network errors): fall back to OKX in production only.
+    if (process.env.NODE_ENV === 'production' && subscribedSymbols.has(sym)) {
+      ensureOkxWs(sym);
+    }
   };
+}
+
+// -------------------------------------------------------------
+// OKX WebSocket fallback (single shared connection for all symbols)
+// -------------------------------------------------------------
+function okxInstId(symbol: string) {
+  const s = symbol.toUpperCase();
+  return s.endsWith('USDT') ? s.slice(0, -4) + '-USDT' : s;
+}
+
+function okxSymbol(instId: string) {
+  return instId.replace('-', '');
+}
+
+function sendOkxSubscribe() {
+  if (!okxWs || okxWs.readyState !== WebSocket.OPEN) return;
+  const args = Array.from(okxSubscribedSymbols).map((s) => ({
+    channel: 'tickers',
+    instId: okxInstId(s),
+  }));
+  if (args.length === 0) return;
+  okxWs.send(JSON.stringify({ op: 'subscribe', args }));
+}
+
+function ensureOkxWs(symbol: string) {
+  const sym = symbol.toUpperCase();
+  okxSubscribedSymbols.add(sym);
+
+  if (okxWs) {
+    if (okxWs.readyState === WebSocket.OPEN) {
+      sendOkxSubscribe();
+      return;
+    }
+    if (okxWs.readyState === WebSocket.CONNECTING) return;
+  }
+
+  if (okxConnecting) return;
+  okxConnecting = true;
+
+  const wsUrl = 'wss://ws.okx.com:8443/ws/v5/public';
+  const ows = new WebSocket(wsUrl);
+  okxWs = ows;
+
+  ows.onopen = () => {
+    okxConnecting = false;
+    console.log('[WS] OKX ticker connected');
+    sendOkxSubscribe();
+  };
+
+  ows.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data as string);
+      if (data.arg?.channel === 'tickers' && Array.isArray(data.data)) {
+        for (const t of data.data) {
+          const sym = okxSymbol(t.instId);
+          const last = parseFloat(t.last);
+          const open24h = parseFloat(t.open24h || '0');
+          const change24h = open24h > 0 ? ((last - open24h) / open24h) * 100 : 0;
+          const priceUpdate = {
+            symbol: sym,
+            price: last,
+            change24h: Number(change24h.toFixed(2)),
+            high24h: parseFloat(t.high24h || last),
+            low24h: parseFloat(t.low24h || last),
+            volume: parseFloat(t.vol24h || '0'),
+            quoteVolume: parseFloat(t.volCcy24h || '0'),
+            count: undefined,
+            weightedAvgPrice: last,
+            bidPrice: parseFloat(t.bidPx || last),
+            askPrice: parseFloat(t.askPx || last),
+            timestamp: parseFloat(t.ts || Date.now()),
+            source: 'ws-okx',
+          };
+
+          const idx = cachedTop100.findIndex((c) => c.symbol === sym);
+          if (idx >= 0) {
+            cachedTop100[idx] = {
+              ...cachedTop100[idx],
+              ...priceUpdate,
+              lastUpdate: Date.now(),
+            };
+          }
+
+          broadcast({ type: 'ticker', data: priceUpdate });
+        }
+      }
+    } catch {
+      // ignore malformed messages
+    }
+  };
+
+  ows.onclose = () => {
+    okxConnecting = false;
+    if (okxWs === ows) okxWs = null;
+    if (okxSubscribedSymbols.size > 0) {
+      setTimeout(() => {
+        okxWs = null;
+        const syms = [...okxSubscribedSymbols];
+        okxSubscribedSymbols.clear();
+        for (const s of syms) ensureOkxWs(s);
+      }, 3000);
+    }
+  };
+
+  ows.onerror = (err) => {
+    console.error(`[WS] OKX ticker error:`, (err as Error).message);
+  };
+}
+
+function unsubscribeOkxWs(symbol: string) {
+  const sym = symbol.toUpperCase();
+  okxSubscribedSymbols.delete(sym);
+  if (okxSubscribedSymbols.size === 0 && okxWs) {
+    okxWs.close();
+    okxWs = null;
+  }
 }
 
 function unsubscribeBinanceWs(symbol: string) {
