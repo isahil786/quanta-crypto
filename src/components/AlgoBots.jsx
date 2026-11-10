@@ -60,6 +60,11 @@ export default function AlgoBots({ accounts, tickers }) {
   const [gridCount, setGridCount] = useState('8');
   const [gridSize, setGridSize] = useState('0.05');
 
+  // QSL (Quant Square Levels) parameters
+  const [qslLevelsEachSide, setQslLevelsEachSide] = useState('5');
+  const [qslTriggerLevel, setQslTriggerLevel] = useState('2');
+  const [qslSize, setQslSize] = useState('0.05');
+
   const fetchBots = async () => {
     try {
       const res = await fetch('/api/bots');
@@ -181,8 +186,10 @@ export default function AlgoBots({ accounts, tickers }) {
         lowerPrice: gridLower,
         upperPrice: gridUpper,
         gridCount,
-        sizePerGrid: gridSize,
         gridMode,
+        levelsEachSide: qslLevelsEachSide,
+        triggerLevel: qslTriggerLevel,
+        sizePerGrid: botType === 'QSL' ? Number(qslSize) : Number(gridSize),
       };
 
       const res = await fetch('/api/bots', {
@@ -403,6 +410,7 @@ export default function AlgoBots({ accounts, tickers }) {
 
           const buyRungs = (bot.rungs || []).filter((r) => r.side === 'BUY');
           const sellRungs = (bot.rungs || []).filter((r) => r.side === 'SELL');
+          const ladderLevels = bot.type === 'QSL' ? (bot.levels || []) : (bot.rungs || []);
 
           return (
             <div
@@ -571,6 +579,78 @@ export default function AlgoBots({ accounts, tickers }) {
                   </div>
                 )}
 
+                {/* QSL Metrics */}
+                {bot.type === 'QSL' && (
+                  <div className="mt-3 relative overflow-hidden rounded-xl border border-purple-500/35 bg-gradient-to-br from-purple-950/40 via-slate-950/85 to-purple-950/20 p-3.5 shadow-[0_0_25px_rgba(168,85,247,0.12)] space-y-3">
+                    {/* Header inside */}
+                    <div className="relative z-10 flex items-center justify-between pb-2 border-b border-purple-500/20">
+                      <div className="flex items-center gap-1.5">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.9)]"></span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold tracking-wider uppercase text-purple-400">
+                          QSL Square Levels
+                        </span>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-purple-400/15 text-purple-300 border border-purple-400/30 shadow-[0_0_10px_rgba(168,85,247,0.2)]">
+                        ⚡ Active
+                      </span>
+                    </div>
+
+                    {/* Realized + Floating PnL */}
+                    <div className="relative z-10 flex items-baseline justify-between">
+                      <div>
+                        <div className="text-[10px] text-slate-400 font-mono">Net Realized Profit</div>
+                        <div className="text-2xl font-black font-mono tracking-tight bg-gradient-to-r from-purple-200 via-purple-400 to-fuchsia-300 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(168,85,247,0.35)] tabular-nums">
+                          {(bot.realizedProfitUSDT || 0) >= 0 ? '+' : ''}${(bot.realizedProfitUSDT || 0).toFixed(2)}{' '}
+                          <span className="text-xs text-purple-400 font-bold">USDT</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] text-slate-400 font-mono">Floating PnL</div>
+                        <div
+                          className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
+                            (bot.unrealizedPnlUSDT || 0) >= 0
+                              ? 'bg-purple-400/15 text-purple-300 border-purple-400/30 shadow-[0_0_8px_rgba(168,85,247,0.15)]'
+                              : 'bg-rose-400/15 text-rose-300 border-rose-400/30'
+                          }`}
+                        >
+                          {(bot.unrealizedPnlUSDT || 0) >= 0 ? '+' : ''}${bot.unrealizedPnlUSDT?.toFixed(2) || '0.00'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Secondary Metrics */}
+                    <div className="relative z-10 grid grid-cols-3 gap-2 pt-1 font-mono">
+                      <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/25 shadow-[0_0_12px_rgba(168,85,247,0.08)] flex flex-col justify-between">
+                        <span className="text-[9px] uppercase tracking-wider text-purple-300/80">Base Number</span>
+                        <span className="text-xs font-bold text-purple-200 mt-0.5">#{bot.baseNumber}</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-fuchsia-500/10 border border-fuchsia-500/25 shadow-[0_0_12px_rgba(236,72,153,0.08)] flex flex-col justify-between">
+                        <span className="text-[9px] uppercase tracking-wider text-fuchsia-300/80">Levels</span>
+                        <span className="text-xs font-bold text-fuchsia-200 mt-0.5">{bot.levels?.length || 0}</span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-teal-500/10 border border-teal-500/25 shadow-[0_0_12px_rgba(20,184,166,0.08)] flex flex-col justify-between">
+                        <span className="text-[9px] uppercase tracking-wider text-teal-300/80">Round Sweeps</span>
+                        <span className="text-xs font-bold text-teal-200 mt-0.5">{bot.completedRounds || 0} filled</span>
+                      </div>
+                    </div>
+
+                    {/* Range Summary */}
+                    <div className="relative z-10 flex items-center justify-between text-[11px] pt-2 border-t border-purple-500/20 text-slate-400 font-mono">
+                      <span>Range: ${bot.levels?.[0]?.price?.toLocaleString()} - ${bot.levels?.[bot.levels.length - 1]?.price?.toLocaleString()}</span>
+                      <span className="text-slate-300">
+                        Live: {bot.currentPrice?.toLocaleString() ?? bot.initialPrice?.toLocaleString()}
+                      </span>
+                      <span className="text-slate-300">
+                        <strong className="text-purple-400">{buyRungs.length}B</strong> /{' '}
+                        <strong className="text-rose-400">{sellRungs.length}S</strong>
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Recent Log Teaser */}
                 <div className="mt-3 pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
                   <span className="text-slate-500 font-medium">Latest Activity:</span>
@@ -590,7 +670,7 @@ export default function AlgoBots({ accounts, tickers }) {
                     {selectedBotLogId === bot.id ? 'Hide Logs' : 'Logs'}
                   </button>
 
-                  {isGrid && (
+                  {(isGrid || bot.type === 'QSL') && (
                     <button
                       onClick={() => setSelectedBotLadderId(selectedBotLadderId === bot.id ? null : bot.id)}
                       className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors flex items-center gap-1 ${
@@ -639,7 +719,7 @@ export default function AlgoBots({ accounts, tickers }) {
               </div>
 
               {/* Visual Grid Price Ladder with Earning Light Patches */}
-              {showLadder && isGrid && (
+              {showLadder && (isGrid || bot.type === 'QSL') && (
                 <div className="mt-3 p-3 bg-slate-950 rounded-lg border border-slate-800 max-h-64 overflow-y-auto">
                   {/* Ladder Earning Light Patch Banner */}
                   <div className="p-2 mb-2 rounded-lg bg-gradient-to-r from-emerald-500/20 via-emerald-500/10 to-teal-500/15 border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.12)] flex items-center justify-between font-mono text-[11px]">
@@ -654,12 +734,12 @@ export default function AlgoBots({ accounts, tickers }) {
                   </div>
 
                   <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/80 text-[10px] text-slate-400 font-mono">
-                    <span>Grid Rungs Ladder ({bot.rungs?.length || 0} levels)</span>
+                    <span>QSL Levels Ladder ({ladderLevels.length} levels)</span>
                     <span>Order Size: {bot.sizePerGrid}</span>
                   </div>
 
                   <div className="flex flex-col gap-1 mt-2 font-mono text-[11px] tabular-nums">
-                    {bot.rungs?.map((rung) => {
+                    {ladderLevels.map((rung) => {
                       const isSell = rung.side === 'SELL';
                       const hasFills = (rung.fillsCount || 0) > 0;
                       const hasProfit = (rung.profitCaptured || 0) > 0;
@@ -764,6 +844,17 @@ export default function AlgoBots({ accounts, tickers }) {
                     }`}
                   >
                     Breakout Radar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBotType('QSL')}
+                    className={`py-2 px-2 text-xs font-semibold rounded-lg border text-center transition-colors ${
+                      botType === 'QSL'
+                        ? 'bg-purple-500/10 text-purple-400 border-purple-500/40 shadow-sm'
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    Quant Square Levels
                   </button>
                 </div>
               </div>
@@ -1013,6 +1104,53 @@ export default function AlgoBots({ accounts, tickers }) {
                         className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-rose-400 mt-1"
                       />
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* QSL Parameters */}
+              {botType === 'QSL' && (
+                <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-3">
+                  <div className="text-xs font-semibold text-purple-400">Quant Square Levels Parameters</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-400">Levels Each Side</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={qslLevelsEachSide}
+                        onChange={(e) => setQslLevelsEachSide(e.target.value)}
+                        required
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-purple-300 font-bold mt-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Trigger Level</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="5"
+                        value={qslTriggerLevel}
+                        onChange={(e) => setQslTriggerLevel(e.target.value)}
+                        required
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-purple-300 font-bold mt-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Size Per Level</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={qslSize}
+                        onChange={(e) => setQslSize(e.target.value)}
+                        required
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-white mt-1"
+                      />
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono mt-1">
+                    Levels derived from square numbers around current price. Bot auto-recenters when price reaches the trigger level above/below center.
                   </div>
                 </div>
               )}

@@ -12,7 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 
-export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, feedOk = true, children }) {
+export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, feedOk = true, wsConnected = false, children }) {
   const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
 
   const navLinks = [
@@ -150,7 +150,12 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
         <div className="flex items-center gap-2 font-mono tabular-nums text-slate-400 text-[11px]">
           <span className={`w-2 h-2 rounded-full ${feedOk ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
           <span className={`font-bold ${feedOk ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {feedOk ? 'Public Binance API v3: Synchronized' : 'Binance price feed unavailable'}
+            {feedOk ? 'Binance REST: Synchronized' : 'Binance price feed unavailable'}
+          </span>
+          <span className="text-slate-500">·</span>
+          <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+          <span className={`font-bold ${wsConnected ? 'text-emerald-400' : 'text-slate-400'}`}>
+            {wsConnected ? 'Live WebSocket' : 'WebSocket connecting…'}
           </span>
         </div>
       </footer>

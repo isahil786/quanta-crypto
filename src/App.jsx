@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Layout from './components/Layout.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import Trades from './components/Trades.jsx';
@@ -19,6 +19,110 @@ export default function App() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [orderRefreshCount, setOrderRefreshCount] = useState(0);
   const [feedOk, setFeedOk] = useState(true);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [wsError, setWsError] = useState(null);
+
+  const wsUrl = useRef(null);
+  const symbolsRef = useRef([]);
+
+  // Keep latest symbols in a ref so connectWebSocket doesn't need tickers as a dep
+  useEffect(() => {
+    symbolsRef.current = tickers.map((t) => t.symbol);
+  }, [tickers]);
+
+  // Build WebSocket URL from current host (same server as HTTP API)
+  const getWsUrl = useCallback(() => {
+    const { protocol, host } = window.location;
+    const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsProto}//${host}/ws`;
+  }, []);
+
+  // Merge a WebSocket ticker update into the tickers list
+  const applyTickerUpdate = useCallback((update) => {
+    setTickers((prev) => {
+      const idx = prev.findIndex((t) => t.symbol === update.symbol);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          price: update.price,
+          change24h: update.change24h ?? next[idx].change24h,
+          high24h: update.high24h ?? next[idx].high24h,
+          low24h: update.low24h ?? next[idx].low24h,
+          volume: update.volume ?? next[idx].volume,
+          quoteVolume: update.quoteVolume ?? next[idx].quoteVolume,
+          bidPrice: update.bidPrice ?? next[idx].bidPrice,
+          askPrice: update.askPrice ?? next[idx].askPrice,
+          lastUpdate: update.timestamp,
+          source: 'ws',
+        };
+        return next;
+      }
+      return [...prev, { ...update, source: 'ws', momentumRank: prev.length + 1 }];
+    });
+  }, []);
+
+  // Connect to WebSocket and subscribe to all current tickers
+  const connectWebSocket = useCallback(() => {
+    if (wsUrl.current) {
+      wsUrl.current.close();
+    }
+    const url = getWsUrl();
+    wsUrl.current = new WebSocket(url);
+    const currentSymbols = symbolsRef.current;
+
+    wsUrl.current.onopen = () => {
+      setWsConnected(true);
+      setWsError(null);
+      setTimeout(() => {
+        if (wsUrl.current && wsUrl.current.readyState === WebSocket.OPEN && currentSymbols.length > 0) {
+          wsUrl.current.send(JSON.stringify({
+            type: 'subscribe_batch',
+            symbols: currentSymbols,
+          }));
+        }
+      }, 50);
+    };
+
+    wsUrl.current.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'snapshot') {
+          setTickers(msg.data || []);
+          setFeedOk(true);
+        } else if (msg.type === 'ticker') {
+          applyTickerUpdate(msg.data);
+          setFeedOk(true);
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    };
+
+    wsUrl.current.onclose = () => {
+      setWsConnected(false);
+      wsUrl.current = null;
+    };
+
+    wsUrl.current.onerror = (err) => {
+      setWsError('WebSocket connection failed');
+      setWsConnected(false);
+    };
+  }, [getWsUrl, applyTickerUpdate]);
+
+  // Maintain WebSocket connection with retry
+  useEffect(() => {
+    connectWebSocket();
+    const retryTimer = setInterval(() => {
+      if (!wsUrl.current || wsUrl.current.readyState === WebSocket.CLOSED) {
+        connectWebSocket();
+      }
+    }, 5000);
+    return () => {
+      clearInterval(retryTimer);
+      if (wsUrl.current) wsUrl.current.close();
+    };
+  }, [connectWebSocket]);
 
   // Fetch accounts on load and refresh periodically
   const loadAccounts = async () => {
@@ -81,14 +185,15 @@ export default function App() {
   };
 
   return (
-    <Layout
-      activeTab={activeTab}
-      setActiveTab={setActiveTab}
-      accounts={accounts}
-      activeAccountId={activeAccountId}
-      setActiveAccountId={setActiveAccountId}
-      feedOk={feedOk}
-    >
+      <Layout
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        accounts={accounts}
+        activeAccountId={activeAccountId}
+        setActiveAccountId={setActiveAccountId}
+        feedOk={feedOk}
+        wsConnected={wsConnected}
+      >
       {activeTab === 'dashboard' && (
         <Dashboard
           accounts={accounts}

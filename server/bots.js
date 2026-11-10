@@ -116,6 +116,90 @@ export function generateGridRungs({
   return rungs;
 }
 
+//==============================================================
+// MRS Quant Square Levels (QSL) — ported from Pine Script v6
+// Price levels derived from square numbers: level(n) = square(n) / 10^decimals
+// square(n) = n^2, rounded up to next odd if n^2 is even
+// baseNumber(n) = round(sqrt(price * 10^decimals))
+// Auto-recenters when price reaches the trigger level above/below center
+//==============================================================
+
+/** Count significant decimal places (mintick-style). */
+export function f_decimalPlaces(price) {
+  const str = String(Number(price));
+  const dot = str.indexOf('.');
+  if (dot < 0) return 0;
+  return str.length - dot - 1;
+}
+
+/** Natural number: round(sqrt(price * 10^decimals)). */
+export function f_naturalNumber(price) {
+  const decimals = f_decimalPlaces(price);
+  const multiplier = Math.pow(10, decimals);
+  return Math.round(Math.sqrt(price * multiplier));
+}
+
+/** Square level: n^2, bumped to next odd when n^2 is even. */
+export function f_squareLevel(number) {
+  let squared = number * number;
+  if (squared % 2 === 0) squared += 1;
+  return squared;
+}
+
+/** Price level for a given natural number: square(n) / multiplier. */
+export function f_priceLevel(number, multiplier) {
+  return f_squareLevel(number) / multiplier;
+}
+
+/** Generate square-level rungs around a center number. */
+export function generateSquareLevels({
+  centerNumber,
+  levelsEachSide,
+  currentPrice,
+  multiplier,
+  sizePerGrid = 1,
+  precision = 2,
+}) {
+  const rungs = [];
+  const count = Math.max(1, Math.min(parseInt(levelsEachSide, 10) || 5, 20));
+  const lower = Number(currentPrice);
+  const size = Number(sizePerGrid);
+
+  for (let offset = -count; offset <= count; offset++) {
+    const currentNumber = Number(centerNumber) + offset;
+    if (currentNumber <= 0) continue;
+    const price = Number(f_priceLevel(currentNumber, multiplier).toFixed(precision));
+    const side = price < lower ? 'BUY' : price > lower ? 'SELL' : 'BUY';
+
+    rungs.push({
+      id: `qsl-${currentNumber}`,
+      number: currentNumber,
+      offset,
+      price,
+      side,
+      orderSize: size,
+      status: 'ACTIVE',
+      fillsCount: 0,
+      profitCaptured: 0,
+      targetPrice: null,
+    });
+  }
+
+  // Pair levels: buy at n -> sell at n+1; sell at n -> buy at n-1
+  const byNumber = new Map(rungs.map((r) => [r.number, r]));
+  for (const rung of rungs) {
+    if (rung.side === 'BUY') {
+      const above = byNumber.get(rung.number + 1);
+      rung.targetPrice = above ? above.price : Number((rung.price * 1.01).toFixed(precision));
+    } else {
+      const below = byNumber.get(rung.number - 1);
+      rung.targetPrice = below ? below.price : Number((rung.price * 0.99).toFixed(precision));
+    }
+  }
+
+  return rungs;
+}
+
 const MAX_LOGS = 200;
 const MAX_HISTORY = 10000;
 
@@ -264,6 +348,96 @@ function runGrid(bot, livePrice) {
   }
 }
 
+/** Recenter QSL square levels around the current live price. */
+function recenterQSL(bot, livePrice) {
+  const decimals = f_decimalPlaces(livePrice);
+  const multiplier = Math.pow(10, decimals);
+  const newBaseNumber = f_naturalNumber(livePrice);
+  if (newBaseNumber === bot.baseNumber) return;
+
+  const newLevels = generateSquareLevels({
+    centerNumber: newBaseNumber,
+    levelsEachSide: bot.levelsEachSide,
+    currentPrice: livePrice,
+    multiplier,
+    precision: bot.decimalPlaces || decimals,
+  });
+
+  bot.levels = newLevels;
+  bot.baseNumber = newBaseNumber;
+  bot.multiplier = multiplier;
+  bot.decimalPlaces = decimals;
+  bot.initialPrice = livePrice;
+  bot.inventoryCostBasis = bot.inventoryCostBasis || livePrice;
+  log(bot, `[QSL Recenter] Base #${newBaseNumber}, levels recalculated @ $${livePrice.toLocaleString()}.`);
+}
+
+/** Run one QSL cycle: process square-level fills and auto-recenter on trigger. */
+function runQSL(bot, livePrice) {
+  const account = accounts.find((a) => a.id === bot.accountId);
+  if (!account) {
+    bot.status = 'ERROR';
+    log(bot, 'Account no longer exists; bot halted.');
+    return;
+  }
+  const feeFrac = feePctFor(bot.broker) / 100;
+  bot.currentPrice = livePrice;
+  bot.unrealizedPnlUSDT = Number(((livePrice - (bot.inventoryCostBasis || bot.initialPrice || livePrice)) * (bot.totalBaseHoldings || 0)).toFixed(2));
+
+  // Auto-recenter trigger: price reaches triggerLevel above/below center
+  const triggerIndex = Math.max(1, bot.triggerLevel || 2);
+  const levels = bot.levels || [];
+  const centerRung = levels.find((r) => r.offset === 0);
+  if (centerRung) {
+    const upperRung = levels.find((r) => r.offset === triggerIndex);
+    const lowerRung = levels.find((r) => r.offset === -triggerIndex);
+    const upperTrigger = upperRung && livePrice >= upperRung.price;
+    const lowerTrigger = lowerRung && livePrice <= lowerRung.price;
+    if (upperTrigger || lowerTrigger) {
+      recenterQSL(bot, livePrice);
+      return;
+    }
+  }
+
+  for (const rung of levels) {
+    if (rung.status !== 'ACTIVE') continue;
+
+    if (rung.side === 'BUY' && livePrice <= rung.price) {
+      const fillPrice = rung.price;
+      const res = executeFill({ bot, side: 'BUY', price: fillPrice, size: rung.orderSize, tag: 'qsl-b' });
+      if (!res.ok) { logRejection(bot, `qsl-b${rung.number}`, res.reason); continue; }
+      rung.fillsCount += 1;
+      bot.completedRounds += 1;
+      bot.totalBaseHoldings = Number(((bot.totalBaseHoldings || 0) + rung.orderSize).toFixed(8));
+      rung.side = 'SELL';
+      [rung.price, rung.targetPrice] = [rung.targetPrice, rung.price];
+      log(bot, `[QSL Buy Filled] Bought ${rung.orderSize} ${bot.symbol} @ $${fillPrice.toLocaleString()}. Sell limit placed @ $${rung.price.toLocaleString()}.`);
+    } else if (rung.side === 'SELL' && livePrice >= rung.price) {
+      if ((bot.totalBaseHoldings || 0) + 1e-12 < rung.orderSize) continue;
+      if (baseInventory(account, bot.symbol) + 1e-12 < rung.orderSize) {
+        logRejection(bot, `qsl-s${rung.number}`, 'account no longer holds the QSL inventory');
+        continue;
+      }
+      const fillPrice = rung.price;
+      const boughtAt = rung.targetPrice;
+      const res = executeFill({ bot, side: 'SELL', price: fillPrice, size: rung.orderSize, tag: 'qsl-s' });
+      if (!res.ok) { logRejection(bot, `qsl-s${rung.number}`, res.reason); continue; }
+      rung.fillsCount += 1;
+      bot.completedRounds += 1;
+      const gross = (fillPrice - boughtAt) * rung.orderSize;
+      const fees = (fillPrice + boughtAt) * rung.orderSize * feeFrac;
+      const netProfit = Number((gross - fees).toFixed(4));
+      rung.profitCaptured = Number(((rung.profitCaptured || 0) + netProfit).toFixed(4));
+      bot.realizedProfitUSDT = Number(((bot.realizedProfitUSDT || 0) + netProfit).toFixed(4));
+      bot.totalBaseHoldings = Number(((bot.totalBaseHoldings || 0) - rung.orderSize).toFixed(8));
+      bot.volumeUSDT = Number(((bot.volumeUSDT || 0) + fillPrice * rung.orderSize).toFixed(2));
+      rung.side = 'BUY';
+      [rung.price, rung.targetPrice] = [rung.targetPrice, rung.price];
+      log(bot, `[QSL Spread Harvested] Sold @ $${fillPrice.toLocaleString()}. Net ${netProfit >= 0 ? '+' : ''}$${netProfit} USDT. Buy limit placed @ $${rung.price.toLocaleString()}.`);
+    }
+  }
+}
+
 /** Evaluate GTT / conditional rules against live prices. */
 function runGtt(liveCoins) {
   for (const rule of gttRules) {
@@ -342,6 +516,7 @@ export async function runBotsBackgroundCycle() {
       if (bot.type === 'TWAP_SLICER') runTwap(bot, coin.price, now);
       else if (bot.type === 'BREAKOUT_CHASER') runBreakout(bot, coin.price);
       else if (bot.type === 'GRID_BOT' && Array.isArray(bot.rungs)) runGrid(bot, coin.price);
+      else if (bot.type === 'QSL' && Array.isArray(bot.levels)) runQSL(bot, coin.price);
     } catch (err) {
       bot.status = 'ERROR';
       log(bot, `Bot halted by internal error: ${err.message}`);

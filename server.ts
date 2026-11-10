@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { WebSocketServer, WebSocket } from 'ws';
 import {
   BROKERS,
   DEFAULT_BROKER,
@@ -34,6 +35,9 @@ import {
   startBotLoop,
   seedGridInventory,
   generateGridRungs,
+  generateSquareLevels,
+  f_decimalPlaces,
+  f_naturalNumber,
   calculateOptimalGridParams,
 } from './server/bots.js';
 import {
@@ -762,11 +766,11 @@ app.post('/api/mirror/update-replica', (req, res) => {
 app.get('/api/bots', (req, res) => {
   const activeBots = botsState.bots.filter((b) => b.status === 'RUNNING').length;
   const totalRealizedProfit = botsState.bots
-    .filter((b) => b.type === 'GRID_BOT')
+    .filter((b) => b.type === 'GRID_BOT' || b.type === 'QSL')
     .reduce((sum, b) => sum + (b.realizedProfitUSDT || 0), 0);
   const totalVolume = botsState.bots.reduce((sum, b) => {
     if (b.type === 'TWAP_SLICER') return sum + (b.executedSize * (b.averageExecPrice || 100));
-    if (b.type === 'GRID_BOT') return sum + (b.volumeUSDT || 0);
+    if (b.type === 'GRID_BOT' || b.type === 'QSL') return sum + (b.volumeUSDT || 0);
     return sum;
   }, 0);
 
@@ -832,14 +836,17 @@ app.post('/api/bots', async (req, res) => {
       gridCount = 5,
       sizePerGrid,
       gridMode = 'ARITHMETIC',
+      // QSL params
+      levelsEachSide,
+      triggerLevel,
     } = req.body;
 
     const account = accounts.find((a) => a.id === accountId);
     if (!account) {
       return res.status(404).json({ error: 'Target account not found' });
     }
-    if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT'].includes(type)) {
-      return res.status(400).json({ error: 'type must be TWAP_SLICER, BREAKOUT_CHASER or GRID_BOT' });
+    if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT', 'QSL'].includes(type)) {
+      return res.status(400).json({ error: 'type must be TWAP_SLICER, BREAKOUT_CHASER, GRID_BOT or QSL' });
     }
     if (!VALID_SIDES.has(String(side).toUpperCase())) {
       return res.status(400).json({ error: 'side must be BUY or SELL' });
@@ -856,6 +863,17 @@ app.post('/api/bots', async (req, res) => {
       }
       if (!(Number.isInteger(num(gridCount)) && num(gridCount) >= 2 && num(gridCount) <= 200) || !isPositiveNumber(sizePerGrid)) {
         return res.status(400).json({ error: 'Grid needs an integer gridCount between 2 and 200 and a positive sizePerGrid' });
+      }
+    }
+    if (type === 'QSL') {
+      if (!(Number.isInteger(num(levelsEachSide)) && num(levelsEachSide) >= 1 && num(levelsEachSide) <= 20)) {
+        return res.status(400).json({ error: 'QSL needs an integer levelsEachSide between 1 and 20' });
+      }
+      if (!(Number.isInteger(num(triggerLevel)) && num(triggerLevel) >= 1 && num(triggerLevel) <= 5)) {
+        return res.status(400).json({ error: 'QSL needs an integer triggerLevel between 1 and 5' });
+      }
+      if (!isPositiveNumber(sizePerGrid)) {
+        return res.status(400).json({ error: 'QSL needs a positive sizePerGrid' });
       }
     }
 
@@ -941,9 +959,57 @@ app.post('/api/bots', async (req, res) => {
         time: new Date().toLocaleTimeString(),
         text: `${gridMode} ladder created: ${buyRungsCount} Buy rungs below $${livePrice}, ${sellRungsCount} Sell rungs above (starting inventory of ${seeded} ${symbol} bought at market).`,
       });
+    } else if (type === 'QSL') {
+      const levelsEachSideNum = Number(levelsEachSide);
+      const triggerLevelNum = Number(triggerLevel);
+      const generatedLevels = generateSquareLevels({
+        centerNumber: f_naturalNumber(livePrice),
+        levelsEachSide: levelsEachSideNum,
+        currentPrice: livePrice,
+        multiplier: Math.pow(10, f_decimalPlaces(livePrice)),
+        sizePerGrid: Number(sizePerGrid),
+        precision,
+      });
+
+      newBot = {
+        ...newBot,
+        levelsEachSide: levelsEachSideNum,
+        triggerLevel: triggerLevelNum,
+        sizePerGrid: Number(sizePerGrid),
+        initialPrice: livePrice,
+        currentPrice: livePrice,
+        baseNumber: f_naturalNumber(livePrice),
+        multiplier: Math.pow(10, f_decimalPlaces(livePrice)),
+        decimalPlaces: f_decimalPlaces(livePrice),
+        rungs: generatedLevels,
+        levels: generatedLevels,
+        realizedProfitUSDT: 0,
+        unrealizedPnlUSDT: 0,
+        totalBaseHoldings: 0,
+        completedRounds: 0,
+        volumeUSDT: 0,
+      };
+
+      const buyLevelsCount = generatedLevels.filter((r) => r.side === 'BUY').length;
+      const sellLevelsCount = generatedLevels.filter((r) => r.side === 'SELL').length;
+
+      const qslSeed = seedGridInventory(newBot, account, livePrice);
+      if (!qslSeed.ok) {
+        return res.status(400).json({ error: `Cannot fund QSL starting inventory: ${qslSeed.reason}` });
+      }
+      const qslSeeded = qslSeed.qty;
+      newBot.logs.unshift({
+        time: new Date().toLocaleTimeString(),
+        text: `QSL square ladder created: base #${newBot.baseNumber}, ${buyLevelsCount} Buy levels below $${livePrice}, ${sellLevelsCount} Sell levels above (seeded ${qslSeeded} ${symbol} @ $${livePrice}, size ${sizePerGrid} per level).`,
+      });
     }
 
     botsState.bots.unshift(newBot);
+
+    // Track symbol subscription for WS auto-unsubscribe on delete
+    const sym = String(symbol).toUpperCase();
+    symbolBotCounts.set(sym, (symbolBotCounts.get(sym) || 0) + 1);
+
     res.status(201).json(newBot);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -988,6 +1054,18 @@ app.delete('/api/bots/:id', (req, res) => {
     return res.status(404).json({ error: 'Bot not found' });
   }
   const removed = botsState.bots.splice(index, 1)[0];
+
+  // Decrement symbol subscription and auto-unsubscribe WS when no bots remain
+  const sym = String(removed.symbol).toUpperCase();
+  const current = symbolBotCounts.get(sym) || 0;
+  if (current > 0) {
+    symbolBotCounts.set(sym, current - 1);
+    if (current - 1 === 0) {
+      symbolBotCounts.delete(sym);
+      unsubscribeBinanceWs(sym);
+    }
+  }
+
   res.json({ success: true, removedId: removed.id });
 });
 
@@ -1091,11 +1169,145 @@ async function startServer() {
 
   startBotLoop();
   const HOST = process.env.HOST || '127.0.0.1';
-  app.listen(PORT, HOST, () => {
+  const server = app.listen(PORT, HOST, () => {
     console.log(`QuantaCrypto Terminal (paper trading) running at http://${HOST}:${PORT}`);
     if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
       console.warn('WARNING: listening on a non-loopback address without API_TOKEN set. The API is unauthenticated.');
     }
+  });
+
+  // -------------------------------------------------------------
+  // WebSocket Live Price Feed
+  // Broadcasts Binance 24hr ticker updates to connected browser clients
+  // -------------------------------------------------------------
+  const wss = new WebSocketServer({ server, path: '/ws' });
+
+  const subscribedSymbols = new Set<string>();
+  const binanceWsBySymbol = new Map<string, WebSocket>();
+  const wsClients = new Set<WebSocket>();
+  // Tracks how many active bots reference each symbol (for auto-unsubscribe on delete)
+  const symbolBotCounts = new Map<string, number>();
+
+  function broadcast(message: any) {
+    const payload = JSON.stringify(message);
+    for (const client of wsClients) {
+      if (client.readyState === WebSocket.OPEN) {
+        try { client.send(payload); } catch { /* ignore send errors */ }
+      }
+    }
+  }
+
+  function ensureBinanceWs(symbol: string) {
+    const sym = symbol.toUpperCase();
+    if (binanceWsBySymbol.has(sym)) return;
+    const wsUrl = `wss://stream.binance.com:9443/ws/${sym.toLowerCase()}@ticker`;
+    const bws = new WebSocket(wsUrl);
+    binanceWsBySymbol.set(sym, bws);
+
+    bws.onopen = () => {
+      console.log(`[WS] Binance ticker connected: ${sym}`);
+    };
+
+    bws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string);
+        if (data.e === '24hrTicker') {
+          const priceUpdate = {
+            symbol: data.s,
+            price: parseFloat(data.c),
+            change24h: parseFloat(data.P),
+            high24h: parseFloat(data.h),
+            low24h: parseFloat(data.l),
+            volume: parseFloat(data.v),
+            quoteVolume: parseFloat(data.q),
+            count: parseFloat(data.n),
+            weightedAvgPrice: parseFloat(data.w),
+            bidPrice: parseFloat(data.b),
+            askPrice: parseFloat(data.a),
+            timestamp: data.E,
+            source: 'ws',
+          };
+
+          const idx = cachedTop100.findIndex((c) => c.symbol === data.s);
+          if (idx >= 0) {
+            cachedTop100[idx] = {
+              ...cachedTop100[idx],
+              ...priceUpdate,
+              lastUpdate: Date.now(),
+            };
+          }
+
+          broadcast({ type: 'ticker', data: priceUpdate });
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    };
+
+    bws.onclose = () => {
+      binanceWsBySymbol.delete(sym);
+      if (subscribedSymbols.has(sym)) {
+        setTimeout(() => ensureBinanceWs(sym), 3000);
+      }
+    };
+
+    bws.onerror = (err) => {
+      console.error(`[WS] Binance ticker error for ${sym}:`, (err as Error).message);
+    };
+  }
+
+  function unsubscribeBinanceWs(symbol: string) {
+    const sym = symbol.toUpperCase();
+    subscribedSymbols.delete(sym);
+    const count = symbolBotCounts.get(sym) || 0;
+    if (count > 0) return; // still needed by bots
+    const bws = binanceWsBySymbol.get(sym);
+    if (bws) {
+      bws.close();
+      binanceWsBySymbol.delete(sym);
+      console.log(`[WS] Binance ticker unsubscribed: ${sym}`);
+    }
+  }
+
+  wss.on('connection', (ws: WebSocket) => {
+    wsClients.add(ws);
+
+    ws.send(JSON.stringify({
+      type: 'snapshot',
+      data: cachedTop100,
+      count: cachedTop100.length,
+    }));
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'subscribe' && msg.symbol) {
+          subscribedSymbols.add(msg.symbol.toUpperCase());
+          ensureBinanceWs(msg.symbol.toUpperCase());
+          ws.send(JSON.stringify({
+            type: 'subscribed',
+            symbol: msg.symbol.toUpperCase(),
+          }));
+        } else if (msg.type === 'subscribe_batch' && Array.isArray(msg.symbols)) {
+          for (const sym of msg.symbols) {
+            subscribedSymbols.add(sym.toUpperCase());
+            ensureBinanceWs(sym.toUpperCase());
+          }
+          ws.send(JSON.stringify({
+            type: 'subscribed_batch',
+            count: msg.symbols.length,
+          }));
+        } else if (msg.type === 'unsubscribe' && msg.symbol) {
+          subscribedSymbols.delete(msg.symbol.toUpperCase());
+        }
+      } catch {
+        // ignore malformed client messages
+      }
+    };
+
+    ws.onclose = () => {
+      wsClients.delete(ws);
+    };
   });
 }
 
