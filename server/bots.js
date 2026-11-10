@@ -284,7 +284,7 @@ function runBreakout(bot, livePrice) {
   const hit = bot.side === 'SELL' ? livePrice <= bot.triggerPrice : livePrice >= bot.triggerPrice;
   if (!hit) return;
   const res = executeFill({
-    bot, side: bot.side, price: livePrice, size: bot.size, leverage: bot.leverage || 1,
+    bot, side: bot.side, price: livePrice, size: bot.size,     leverage: 1,
     orderType: bot.broker === 'coinswitch' ? 'LIMIT' : 'MARKET', tpPrice: bot.tpPrice, slPrice: bot.slPrice, tag: 'breakout',
   });
   if (!res.ok) {

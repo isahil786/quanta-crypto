@@ -917,7 +917,7 @@ app.post('/api/bots', async (req, res) => {
         ...newBot,
         triggerPrice: Number(triggerPrice),
         size: Number(size),
-        leverage: Number(leverage),
+        leverage: 1,
         tpPrice: tpPrice ? Number(tpPrice) : undefined,
         slPrice: slPrice ? Number(slPrice) : undefined,
       };
