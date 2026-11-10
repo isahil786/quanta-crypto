@@ -1151,6 +1151,95 @@ app.post('/api/test-endpoints', (req, res) => {
 // -------------------------------------------------------------
 // Vite Server Integration (Dev vs Prod)
 // -------------------------------------------------------------
+// -------------------------------------------------------------
+// WebSocket server state (module-level so bot routes can access it)
+// -------------------------------------------------------------
+const subscribedSymbols = new Set<string>();
+const binanceWsBySymbol = new Map<string, WebSocket>();
+const wsClients = new Set<WebSocket>();
+const symbolBotCounts = new Map<string, number>();
+
+function broadcast(message: any) {
+  const payload = JSON.stringify(message);
+  for (const client of wsClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.send(payload); } catch { /* ignore send errors */ }
+    }
+  }
+}
+
+function ensureBinanceWs(symbol: string) {
+  const sym = symbol.toUpperCase();
+  if (binanceWsBySymbol.has(sym)) return;
+  const wsUrl = `wss://stream.binance.com:9443/ws/${sym.toLowerCase()}@ticker`;
+  const bws = new WebSocket(wsUrl);
+  binanceWsBySymbol.set(sym, bws);
+
+  bws.onopen = () => {
+    console.log(`[WS] Binance ticker connected: ${sym}`);
+  };
+
+  bws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data as string);
+      if (data.e === '24hrTicker') {
+        const priceUpdate = {
+          symbol: data.s,
+          price: parseFloat(data.c),
+          change24h: parseFloat(data.P),
+          high24h: parseFloat(data.h),
+          low24h: parseFloat(data.l),
+          volume: parseFloat(data.v),
+          quoteVolume: parseFloat(data.q),
+          count: parseFloat(data.n),
+          weightedAvgPrice: parseFloat(data.w),
+          bidPrice: parseFloat(data.b),
+          askPrice: parseFloat(data.a),
+          timestamp: data.E,
+          source: 'ws',
+        };
+
+        const idx = cachedTop100.findIndex((c) => c.symbol === data.s);
+        if (idx >= 0) {
+          cachedTop100[idx] = {
+            ...cachedTop100[idx],
+            ...priceUpdate,
+            lastUpdate: Date.now(),
+          };
+        }
+
+        broadcast({ type: 'ticker', data: priceUpdate });
+      }
+    } catch {
+      // ignore malformed messages
+    }
+  };
+
+  bws.onclose = () => {
+    binanceWsBySymbol.delete(sym);
+    if (subscribedSymbols.has(sym)) {
+      setTimeout(() => ensureBinanceWs(sym), 3000);
+    }
+  };
+
+  bws.onerror = (err) => {
+    console.error(`[WS] Binance ticker error for ${sym}:`, (err as Error).message);
+  };
+}
+
+function unsubscribeBinanceWs(symbol: string) {
+  const sym = symbol.toUpperCase();
+  subscribedSymbols.delete(sym);
+  const count = symbolBotCounts.get(sym) || 0;
+  if (count > 0) return; // still needed by bots
+  const bws = binanceWsBySymbol.get(sym);
+  if (bws) {
+    bws.close();
+    binanceWsBySymbol.delete(sym);
+    console.log(`[WS] Binance ticker unsubscribed: ${sym}`);
+  }
+}
+
 async function startServer() {
   if (isDev) {
     const { createServer: createViteServer } = await import('vite');
@@ -1176,98 +1265,7 @@ async function startServer() {
     }
   });
 
-  // -------------------------------------------------------------
-  // WebSocket Live Price Feed
-  // Broadcasts Binance 24hr ticker updates to connected browser clients
-  // -------------------------------------------------------------
   const wss = new WebSocketServer({ server, path: '/ws' });
-
-  const subscribedSymbols = new Set<string>();
-  const binanceWsBySymbol = new Map<string, WebSocket>();
-  const wsClients = new Set<WebSocket>();
-  // Tracks how many active bots reference each symbol (for auto-unsubscribe on delete)
-  const symbolBotCounts = new Map<string, number>();
-
-  function broadcast(message: any) {
-    const payload = JSON.stringify(message);
-    for (const client of wsClients) {
-      if (client.readyState === WebSocket.OPEN) {
-        try { client.send(payload); } catch { /* ignore send errors */ }
-      }
-    }
-  }
-
-  function ensureBinanceWs(symbol: string) {
-    const sym = symbol.toUpperCase();
-    if (binanceWsBySymbol.has(sym)) return;
-    const wsUrl = `wss://stream.binance.com:9443/ws/${sym.toLowerCase()}@ticker`;
-    const bws = new WebSocket(wsUrl);
-    binanceWsBySymbol.set(sym, bws);
-
-    bws.onopen = () => {
-      console.log(`[WS] Binance ticker connected: ${sym}`);
-    };
-
-    bws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data as string);
-        if (data.e === '24hrTicker') {
-          const priceUpdate = {
-            symbol: data.s,
-            price: parseFloat(data.c),
-            change24h: parseFloat(data.P),
-            high24h: parseFloat(data.h),
-            low24h: parseFloat(data.l),
-            volume: parseFloat(data.v),
-            quoteVolume: parseFloat(data.q),
-            count: parseFloat(data.n),
-            weightedAvgPrice: parseFloat(data.w),
-            bidPrice: parseFloat(data.b),
-            askPrice: parseFloat(data.a),
-            timestamp: data.E,
-            source: 'ws',
-          };
-
-          const idx = cachedTop100.findIndex((c) => c.symbol === data.s);
-          if (idx >= 0) {
-            cachedTop100[idx] = {
-              ...cachedTop100[idx],
-              ...priceUpdate,
-              lastUpdate: Date.now(),
-            };
-          }
-
-          broadcast({ type: 'ticker', data: priceUpdate });
-        }
-      } catch {
-        // ignore malformed messages
-      }
-    };
-
-    bws.onclose = () => {
-      binanceWsBySymbol.delete(sym);
-      if (subscribedSymbols.has(sym)) {
-        setTimeout(() => ensureBinanceWs(sym), 3000);
-      }
-    };
-
-    bws.onerror = (err) => {
-      console.error(`[WS] Binance ticker error for ${sym}:`, (err as Error).message);
-    };
-  }
-
-  function unsubscribeBinanceWs(symbol: string) {
-    const sym = symbol.toUpperCase();
-    subscribedSymbols.delete(sym);
-    const count = symbolBotCounts.get(sym) || 0;
-    if (count > 0) return; // still needed by bots
-    const bws = binanceWsBySymbol.get(sym);
-    if (bws) {
-      bws.close();
-      binanceWsBySymbol.delete(sym);
-      console.log(`[WS] Binance ticker unsubscribed: ${sym}`);
-    }
-  }
 
   wss.on('connection', (ws: WebSocket) => {
     wsClients.add(ws);
