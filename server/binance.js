@@ -1,10 +1,14 @@
+import { getLiveTop100MomentumCoins as okxTop100 } from './okx.js';
+
 // Live Binance Market Data Engine
 // Pulls live 24hr tickers, live orderbook depth, and live trades for Top 100 Momentum Coins
 
-const STABLE_PAIRS = new Set([
+export const STABLE_PAIRS = new Set([
   'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'EURUSDT', 'BUSDUSDT',
   'DAIUSDT', 'AEURUSDT', 'USDPUSDT', 'WBTCUSDT', 'WBETHUSDT',
 ]);
+
+export const LEVERAGED_RE = /^(BTC|ETH|BNB|ADA|XRP|LINK|DOT|LTC|EOS|TRX|XLM|BCH|SXP|FIL|AAVE|SUSHI|UNI|1INCH|YFI)(UP|DOWN|BULL|BEAR)USDT$/;
 
 export let cachedTop100 = [];
 let lastFetchTime = 0;
@@ -47,9 +51,6 @@ async function fetchBinance(urlPath, init = {}) {
   throw lastErr;
 }
 
-// Legacy Binance leveraged tokens (BTCUP, ETHDOWN, ...). Matching a bare "UP" suffix
-// would wrongly drop real coins such as JUP, so the base must be a known major.
-const LEVERAGED_RE = /^(BTC|ETH|BNB|ADA|XRP|LINK|DOT|LTC|EOS|TRX|XLM|BCH|SXP|FIL|AAVE|SUSHI|UNI|1INCH|YFI)(UP|DOWN|BULL|BEAR)USDT$/;
 const CACHE_TTL_MS = 3000; // 3 seconds refresh
 
 /**
@@ -157,7 +158,20 @@ async function fetchTop100(now) {
     feedStatus.stale = true;
     feedStatus.lastError = err.message;
     if (cachedTop100.length > 0) return cachedTop100;
-    throw err;
+    // Binance fully blocked (e.g. HTTP 451 from Render IPs): fall back to OKX tickers.
+    try {
+      const okxCoins = await okxTop100();
+      cachedTop100 = okxCoins;
+      lastFetchTime = now;
+      feedStatus.stale = false;
+      feedStatus.lastError = null;
+      feedStatus.lastSuccess = now;
+      return okxCoins;
+    } catch (okxErr) {
+      console.error('OKX Live Data Fetch Error:', okxErr.message);
+      feedStatus.lastError = `${err.message} | OKX: ${okxErr.message}`;
+      throw err;
+    }
   }
 }
 

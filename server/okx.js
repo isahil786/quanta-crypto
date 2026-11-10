@@ -1,5 +1,7 @@
-// OKX v5 Market Data: candles/klines fallback source
+// OKX v5 Market Data: candles/klines and tickers fallback source
 // Used when Binance hostnames are blocked (e.g. HTTP 451 from Render IPs).
+
+import { STABLE_PAIRS, LEVERAGED_RE, getPrecision } from './binance.js';
 
 const OKX_HOSTS = [
   'https://www.okx.com',
@@ -56,6 +58,72 @@ function normalizeSymbol(symbol) {
 
 export function okxBar(interval) {
   return INTERVAL_MAP[interval] || interval;
+}
+
+/**
+ * OKX tickers -> same shape as Binance's getLiveTop100MomentumCoins output.
+ * Filters to liquid USDT spot pairs, excluding stablecoins and leveraged tokens.
+ */
+export async function getLiveTop100MomentumCoins() {
+  const res = await fetchOkx('/api/v5/market/tickers?instType=SPOT');
+  const json = await res.json();
+
+  if (json.code !== '0' || !Array.isArray(json.data)) {
+    throw new Error(`OKX tickers error: ${json.msg || json.code}`);
+  }
+
+  const rows = json.data.filter((t) => {
+    const sym = t.instId;
+    if (!sym.endsWith('-USDT')) return false;
+    const base = sym.replace('-USDT', '');
+    const usdtSym = `${base}USDT`;
+    if (STABLE_PAIRS.has(usdtSym)) return false;
+    if (LEVERAGED_RE.test(usdtSym)) return false;
+    const quoteVol = parseFloat(t.volCcy24h || '0');
+    const price = parseFloat(t.last);
+    return quoteVol >= 1000000 && price > 0;
+  });
+
+  const scored = rows.map((t) => {
+    const sym = t.instId;
+    const base = sym.replace('-USDT', '');
+    const price = parseFloat(t.last);
+    const change24h = parseFloat(t.last) - parseFloat(t.open24h || price);
+    const change24hPct = price > 0 ? (change24h / price) * 100 : 0;
+    const quoteVol = parseFloat(t.volCcy24h || '0');
+    const high = parseFloat(t.high24h || price);
+    const low = parseFloat(t.low24h || price);
+
+    const rangeSpan = high - low;
+    const rangePosition = rangeSpan > 0 ? (price - low) / rangeSpan : 0.5;
+    const momentumScore = change24hPct * Math.log10(quoteVol);
+
+    return {
+      symbol: `${base}USDT`,
+      base,
+      quote: 'USDT',
+      name: base,
+      price,
+      change24h: Number(change24hPct.toFixed(2)),
+      high24h: high,
+      low24h: low,
+      volume: parseFloat(t.vol24h || '0'),
+      quoteVolume: quoteVol,
+      volume24h: quoteVol >= 1e9 ? `${(quoteVol / 1e9).toFixed(2)}B` : `${(quoteVol / 1e6).toFixed(1)}M`,
+      tradesCount: undefined,
+      bidPrice: parseFloat(t.bidPx || price),
+      askPrice: parseFloat(t.askPx || price),
+      weightedAvgPrice: price,
+      rangePosition: Number((rangePosition * 100).toFixed(1)),
+      momentumScore,
+      precision: getPrecision(price),
+      tickSize: price >= 1000 ? 0.1 : price >= 10 ? 0.01 : 0.0001,
+    };
+  });
+
+  scored.sort((a, b) => b.change24h - a.change24h);
+
+  return scored.slice(0, 100).map((coin, index) => ({ ...coin, momentumRank: index + 1 }));
 }
 
 /**
