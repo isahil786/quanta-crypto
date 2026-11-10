@@ -98,6 +98,13 @@ app.get('/api/meta/brokers', async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// Health endpoint (Render health check)
+// -------------------------------------------------------------
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'quanta-crypto', time: new Date().toISOString() });
+});
+
+// -------------------------------------------------------------
 // 2. Accounts Endpoints
 // -------------------------------------------------------------
 app.get('/api/accounts', (req, res) => {
@@ -1257,7 +1264,7 @@ async function startServer() {
   }
 
   startBotLoop();
-  const HOST = process.env.HOST || '127.0.0.1';
+  const HOST = process.env.HOST || '0.0.0.0';
   const server = app.listen(PORT, HOST, () => {
     console.log(`QuantaCrypto Terminal (paper trading) running at http://${HOST}:${PORT}`);
     if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
