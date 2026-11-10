@@ -29,9 +29,10 @@ const FETCH_TIMEOUT_MS = 10000;
 async function fetchBinance(urlPath, init = {}) {
   let lastErr;
   for (const base of BINANCE_HOSTS) {
+    let timeout;
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       const res = await fetch(`${base}${urlPath}`, { signal: controller.signal, ...init });
       clearTimeout(timeout);
       if (!res.ok) {

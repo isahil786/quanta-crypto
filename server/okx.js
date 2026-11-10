@@ -30,9 +30,10 @@ const INTERVAL_MAP = {
 async function fetchOkx(urlPath, init = {}) {
   let lastErr;
   for (const base of OKX_HOSTS) {
+    let timeout;
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       const res = await fetch(`${base}${urlPath}`, { signal: controller.signal, ...init });
       clearTimeout(timeout);
       if (!res.ok) {
