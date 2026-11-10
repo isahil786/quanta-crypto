@@ -11,6 +11,41 @@ let lastFetchTime = 0;
 let inflight = null; // dedupes concurrent fetches
 export const feedStatus = { stale: false, lastError: null, lastSuccess: 0 };
 
+// Binance global API endpoints; Render IPs are sometimes blocked on api.binance.com (HTTP 451).
+// Fall back through the mirror hostnames so live data keeps working.
+const BINANCE_HOSTS = [
+  'https://api.binance.com',
+  'https://api1.binance.com',
+  'https://api2.binance.com',
+  'https://api3.binance.com',
+  'https://api4.binance.com',
+];
+
+const FETCH_TIMEOUT_MS = 10000;
+
+/**
+ * Try a fetch across multiple Binance hostnames until one succeeds.
+ */
+async function fetchBinance(urlPath, init = {}) {
+  let lastErr;
+  for (const base of BINANCE_HOSTS) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      const res = await fetch(`${base}${urlPath}`, { signal: controller.signal, ...init });
+      clearTimeout(timeout);
+      if (!res.ok) {
+        throw new Error(`Binance HTTP ${res.status}: ${res.statusText}`);
+      }
+      return res;
+    } catch (err) {
+      clearTimeout(timeout);
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
 // Legacy Binance leveraged tokens (BTCUP, ETHDOWN, ...). Matching a bare "UP" suffix
 // would wrongly drop real coins such as JUP, so the base must be a known major.
 const LEVERAGED_RE = /^(BTC|ETH|BNB|ADA|XRP|LINK|DOT|LTC|EOS|TRX|XLM|BCH|SXP|FIL|AAVE|SUSHI|UNI|1INCH|YFI)(UP|DOWN|BULL|BEAR)USDT$/;
@@ -44,16 +79,7 @@ export async function getLiveTop100MomentumCoins() {
 
 async function fetchTop100(now) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr', {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      throw new Error(`Binance HTTP ${res.status}: ${res.statusText}`);
-    }
-
+    const res = await fetchBinance('/api/v3/ticker/24hr');
     const allTickers = await res.json();
 
     // Filter valid liquid USDT pairs
@@ -144,12 +170,7 @@ export async function getLiveOrderBookDepth(symbol = 'BTCUSDT', limit = 15) {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
     const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 5000);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(formattedSym)}&limit=${cleanLimit}`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    const res = await fetchBinance(`/api/v3/depth?symbol=${encodeURIComponent(formattedSym)}&limit=${cleanLimit}`);
     if (!res.ok) {
       throw new Error(`Binance depth error: ${res.statusText}`);
     }
@@ -212,12 +233,7 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
     const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 1000);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(`https://api.binance.com/api/v3/trades?symbol=${encodeURIComponent(formattedSym)}&limit=${cleanLimit}`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    const res = await fetchBinance(`/api/v3/trades?symbol=${encodeURIComponent(formattedSym)}&limit=${cleanLimit}`);
     if (!res.ok) {
       throw new Error(`Binance trades error: ${res.statusText}`);
     }
@@ -248,13 +264,9 @@ export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit =
       throw new Error(`Invalid symbol: ${symbol}`);
     }
     const cleanLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 10), 1000);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(formattedSym)}&interval=${encodeURIComponent(interval)}&limit=${cleanLimit}`,
-      { signal: controller.signal },
+    const res = await fetchBinance(
+      `/api/v3/klines?symbol=${encodeURIComponent(formattedSym)}&interval=${encodeURIComponent(interval)}&limit=${cleanLimit}`,
     );
-    clearTimeout(timeout);
     if (!res.ok) {
       throw new Error(`Binance klines error: ${res.statusText}`);
     }
