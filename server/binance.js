@@ -6,7 +6,7 @@ const STABLE_PAIRS = new Set([
   'DAIUSDT', 'AEURUSDT', 'USDPUSDT', 'WBTCUSDT', 'WBETHUSDT',
 ]);
 
-let cachedTop100 = [];
+export let cachedTop100 = [];
 let lastFetchTime = 0;
 let inflight = null; // dedupes concurrent fetches
 export const feedStatus = { stale: false, lastError: null, lastSuccess: 0 };
