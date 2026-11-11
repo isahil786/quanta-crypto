@@ -64,7 +64,7 @@ export function okxBar(interval) {
 }
 
 /**
- * OKX tickers -> same shape as Binance's getLiveTop100MomentumCoins output.
+ * OKX tickers -> { top100, index } in the same coin shape as Binance's feed.
  * Filters to liquid USDT spot pairs, excluding stablecoins and leveraged tokens.
  */
 export async function getLiveTop100MomentumCoins() {
@@ -91,8 +91,8 @@ export async function getLiveTop100MomentumCoins() {
     const sym = t.instId;
     const base = sym.replace('-USDT', '');
     const price = parseFloat(t.last);
-    const change24h = parseFloat(t.last) - parseFloat(t.open24h || price);
-    const change24hPct = price > 0 ? (change24h / price) * 100 : 0;
+    const open24h = parseFloat(t.open24h || '0');
+    const change24hPct = open24h > 0 ? ((price - open24h) / open24h) * 100 : 0; // vs the 24h open, as Binance does
     const quoteVol = parseFloat(t.volCcy24h || '0');
     const high = parseFloat(t.high24h || price);
     const low = parseFloat(t.low24h || price);
@@ -126,7 +126,9 @@ export async function getLiveTop100MomentumCoins() {
 
   scored.sort((a, b) => b.change24h - a.change24h);
 
-  return scored.slice(0, 100).map((coin, index) => ({ ...coin, momentumRank: index + 1 }));
+  // Same contract as Binance: a top-100 list of liquid USDT pairs
+  const top100 = scored.slice(0, 100).map((coin, index) => ({ ...coin, momentumRank: index + 1 }));
+  return top100;
 }
 
 /**

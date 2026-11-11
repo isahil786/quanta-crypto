@@ -39,6 +39,10 @@ export default function AlgoBots({ accounts, tickers }) {
   const [botName, setBotName] = useState('');
   const [targetAccountId, setTargetAccountId] = useState(accounts[0]?.id || '');
   const [symbol, setSymbol] = useState(tickers[0]?.symbol || 'BTCUSDT');
+  // Halal screening: restrict the pair picker (and the server) to the halal coin list
+  const [halalOnly, setHalalOnly] = useState(false);
+  const [halalData, setHalalData] = useState({ tradable: [], unavailable: [], listed: 0 });
+  const pairPool = halalOnly ? halalData.tradable : tickers.slice(0, 30);
   const [side, setSide] = useState('BUY');
 
   // TWAP parameters
@@ -89,9 +93,35 @@ export default function AlgoBots({ accounts, tickers }) {
     };
   }, []);
 
-  // Update default breakout trigger & grid ranges when symbol changes
+  // Load the halal list joined with live prices (covers coins outside the top-100 movers)
   useEffect(() => {
-    const pair = tickers.find((t) => t.symbol === symbol);
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetch('/api/halal/coins');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (alive) setHalalData(data);
+      } catch { /* keep the last good list */ }
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  // Keep the selected pair valid when the pool changes (e.g. toggling halal-only)
+  useEffect(() => {
+    if (pairPool.length > 0 && !pairPool.some((t) => t.symbol === symbol)) {
+      setSymbol(pairPool[0].symbol);
+    }
+  }, [pairPool, symbol]);
+
+  // Default breakout trigger & grid ranges. Runs when the symbol changes (or its price first loads),
+  // NOT on every ticker tick, otherwise the live feed would overwrite values the user is typing.
+  const selectedPair = pairPool.find((t) => t.symbol === symbol) || tickers.find((t) => t.symbol === symbol);
+  const hasSelectedPair = Boolean(selectedPair);
+  useEffect(() => {
+    const pair = selectedPair;
     if (pair) {
       setBreakoutTrigger(pair.high24h?.toString() || pair.price.toString());
       setGridLower((pair.price * 0.96).toFixed(pair.precision));
@@ -99,7 +129,8 @@ export default function AlgoBots({ accounts, tickers }) {
       setGridSize(pair.price > 1000 ? '0.01' : pair.price > 50 ? '0.2' : '10');
       setOptimizationResult(null);
     }
-  }, [symbol, tickers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, hasSelectedPair]);
 
   // Auto-optimize grid parameters based on live Binance market data
   const handleAutoOptimizeGrid = async () => {
@@ -174,6 +205,7 @@ export default function AlgoBots({ accounts, tickers }) {
         name: botName || `${symbol} ${botType === 'GRID_BOT' ? `${gridMode} Grid` : botType.replace('_', ' ')}`,
         accountId: targetAccountId || accounts[0]?.id,
         symbol,
+        halalOnly,
         side,
         totalSize: twapTotalSize,
         slicesCount: twapSlices,
@@ -889,18 +921,37 @@ export default function AlgoBots({ accounts, tickers }) {
                 </div>
 
                 <div>
-                  <label className="text-[11px] text-slate-400 font-medium">Crypto Market Pair</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] text-slate-400 font-medium">Crypto Market Pair</label>
+                    <label className="flex items-center gap-1 text-[10px] text-emerald-400 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={halalOnly}
+                        onChange={(e) => setHalalOnly(e.target.checked)}
+                        className="accent-emerald-500"
+                      />
+                      Halal only
+                    </label>
+                  </div>
                   <select
                     value={symbol}
                     onChange={(e) => setSymbol(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white mt-1 focus:outline-none focus:border-emerald-500 font-mono"
                   >
-                    {tickers.slice(0, 30).map((t) => (
+                    {pairPool.length === 0 && (
+                      <option value={symbol}>{halalOnly ? 'Loading halal coins…' : symbol}</option>
+                    )}
+                    {pairPool.map((t, i) => (
                       <option key={t.symbol} value={t.symbol}>
-                        #{t.momentumRank} {t.symbol} (${t.price < 0.01 ? t.price.toFixed(6) : t.price.toLocaleString()})
+                        #{halalOnly ? t.halalRank : t.momentumRank ?? i + 1} {t.symbol} (${t.price < 0.01 ? t.price.toFixed(6) : t.price.toLocaleString()})
                       </option>
                     ))}
                   </select>
+                  {halalOnly && (
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      {halalData.tradable.length} of {halalData.listed} listed halal coins have a live USDT pair. Third-party screen; verify before trading.
+                    </p>
+                  )}
                 </div>
               </div>
 

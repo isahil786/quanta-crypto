@@ -1,0 +1,1407 @@
+{
+  "source": "https://coinranking.com/coins/halal (merged page+cursor)",
+  "fetchedAt": "2026-11-09T15:38:58.936Z",
+  "total": 200,
+  "coins": [
+    {
+      "name": "Avalanche",
+      "symbol": "AVAX",
+      "slug": "dvUj0CzDZ+avalanche-avax",
+      "url": "https://coinranking.com/coin/dvUj0CzDZ+avalanche-avax",
+      "marketCap": "$3.98 billion"
+    },
+    {
+      "name": "Metal DAO",
+      "symbol": "MTL",
+      "slug": "izyvuzTCPBPrk+metaldao-mtl",
+      "url": "https://coinranking.com/coin/izyvuzTCPBPrk+metaldao-mtl",
+      "marketCap": "$22.25 million"
+    },
+    {
+      "name": "Arweave",
+      "symbol": "AR",
+      "slug": "7XWg41D1+arweave-ar",
+      "url": "https://coinranking.com/coin/7XWg41D1+arweave-ar",
+      "marketCap": "$215.21 million"
+    },
+    {
+      "name": "Basic Attention Token",
+      "symbol": "BAT",
+      "slug": "pOnT-qfd-RN7W+basicattentiontoken-bat",
+      "url": "https://coinranking.com/coin/pOnT-qfd-RN7W+basicattentiontoken-bat",
+      "marketCap": "$194.44 million"
+    },
+    {
+      "name": "Enjin Coin",
+      "symbol": "ENJ",
+      "slug": "hG9iQlgtdwCvc+enjincoin-enj",
+      "url": "https://coinranking.com/coin/hG9iQlgtdwCvc+enjincoin-enj",
+      "marketCap": "$47.73 million"
+    },
+    {
+      "name": "Kusama",
+      "symbol": "KSM",
+      "slug": "ePlOuwd_e+kusama-ksm",
+      "url": "https://coinranking.com/coin/ePlOuwd_e+kusama-ksm",
+      "marketCap": "$62.14 million"
+    },
+    {
+      "name": "Cosmos",
+      "symbol": "ATOM",
+      "slug": "Knsels4_Ol-Ny+cosmos-atom",
+      "url": "https://coinranking.com/coin/Knsels4_Ol-Ny+cosmos-atom",
+      "marketCap": "$753.14 million"
+    },
+    {
+      "name": "Cartesi",
+      "symbol": "CTSI",
+      "slug": "AotMKHLrg+cartesi-ctsi",
+      "url": "https://coinranking.com/coin/AotMKHLrg+cartesi-ctsi",
+      "marketCap": "$24.05 million"
+    },
+    {
+      "name": "My Neighbor Alice",
+      "symbol": "ALICE",
+      "slug": "t7IApd4quI+myneighboralice-alice",
+      "url": "https://coinranking.com/coin/t7IApd4quI+myneighboralice-alice",
+      "marketCap": "$12.29 million"
+    },
+    {
+      "name": "Theta Network",
+      "symbol": "THETA",
+      "slug": "B42IRxNtoYmwK+thetanetwork-theta",
+      "url": "https://coinranking.com/coin/B42IRxNtoYmwK+thetanetwork-theta",
+      "marketCap": "$145.05 million"
+    },
+    {
+      "name": "Chromia",
+      "symbol": "CHR",
+      "slug": "PsSKgHpc6vncu+chromia-chr",
+      "url": "https://coinranking.com/coin/PsSKgHpc6vncu+chromia-chr",
+      "marketCap": "$14.62 million"
+    },
+    {
+      "name": "Celo",
+      "symbol": "CELO",
+      "slug": "RLzoWH76m+celo-celo",
+      "url": "https://coinranking.com/coin/RLzoWH76m+celo-celo",
+      "marketCap": "$40.47 million"
+    },
+    {
+      "name": "SafePal",
+      "symbol": "SFP",
+      "slug": "TWSgvFmNR+safepal-sfp",
+      "url": "https://coinranking.com/coin/TWSgvFmNR+safepal-sfp",
+      "marketCap": "$105.18 million"
+    },
+    {
+      "name": "Artificial Superintelligence Alliance",
+      "symbol": "FET",
+      "slug": "AWma-WzFHmKVQ+artificialsuperintelligencealliance-fet",
+      "url": "https://coinranking.com/coin/AWma-WzFHmKVQ+artificialsuperintelligencealliance-fet",
+      "marketCap": "$328.59 million"
+    },
+    {
+      "name": "STEPN",
+      "symbol": "GMT",
+      "slug": "1I8eZONKt+stepn-gmt",
+      "url": "https://coinranking.com/coin/1I8eZONKt+stepn-gmt",
+      "marketCap": "$19.10 million"
+    },
+    {
+      "name": "Zilliqa",
+      "symbol": "ZIL",
+      "slug": "3jmxrjOJ8xa4p+zilliqa-zil",
+      "url": "https://coinranking.com/coin/3jmxrjOJ8xa4p+zilliqa-zil",
+      "marketCap": "$35.12 million"
+    },
+    {
+      "name": "Conflux Network",
+      "symbol": "CFX",
+      "slug": "getivZMsq+confluxnetwork-cfx",
+      "url": "https://coinranking.com/coin/getivZMsq+confluxnetwork-cfx",
+      "marketCap": "$223.43 million"
+    },
+    {
+      "name": "Gala ",
+      "symbol": "GALA",
+      "slug": "zfVt1uA3P+gala-gala",
+      "url": "https://coinranking.com/coin/zfVt1uA3P+gala-gala",
+      "marketCap": "$79.95 million"
+    },
+    {
+      "name": "Decentraland",
+      "symbol": "MANA",
+      "slug": "tEf7-dnwV3BXS+decentraland-mana",
+      "url": "https://coinranking.com/coin/tEf7-dnwV3BXS+decentraland-mana",
+      "marketCap": "$136.91 million"
+    },
+    {
+      "name": "The Sandbox",
+      "symbol": "SAND",
+      "slug": "pxtKbG5rg+thesandbox-sand",
+      "url": "https://coinranking.com/coin/pxtKbG5rg+thesandbox-sand",
+      "marketCap": "$125.90 million"
+    },
+    {
+      "name": "IOST",
+      "symbol": "IOST",
+      "slug": "LzC3fE0mO8okP+iost-iost",
+      "url": "https://coinranking.com/coin/LzC3fE0mO8okP+iost-iost",
+      "marketCap": "$25.67 million"
+    },
+    {
+      "name": "Hedera",
+      "symbol": "HBAR",
+      "slug": "jad286TjB+hedera-hbar",
+      "url": "https://coinranking.com/coin/jad286TjB+hedera-hbar",
+      "marketCap": "$3.02 billion"
+    },
+    {
+      "name": "Flux",
+      "symbol": "FLUX",
+      "slug": "dEsfOHERD+flux-flux",
+      "url": "https://coinranking.com/coin/dEsfOHERD+flux-flux",
+      "marketCap": "$22.94 million"
+    },
+    {
+      "name": "Phala Network",
+      "symbol": "PHA",
+      "slug": "zoIp0AjkW+phalanetwork-pha",
+      "url": "https://coinranking.com/coin/zoIp0AjkW+phalanetwork-pha",
+      "marketCap": "$30.54 million"
+    },
+    {
+      "name": "Internet Computer",
+      "symbol": "ICP",
+      "slug": "aMNLwaUbY+internetcomputer-icp",
+      "url": "https://coinranking.com/coin/aMNLwaUbY+internetcomputer-icp",
+      "marketCap": "$1.36 billion"
+    },
+    {
+      "name": "Filecoin",
+      "symbol": "FIL",
+      "slug": "ymQub4fuB+filecoin-fil",
+      "url": "https://coinranking.com/coin/ymQub4fuB+filecoin-fil",
+      "marketCap": "$661.77 million"
+    },
+    {
+      "name": "Theta Fuel",
+      "symbol": "TFUEL",
+      "slug": "11H-TGR7543X+thetafuel-tfuel",
+      "url": "https://coinranking.com/coin/11H-TGR7543X+thetafuel-tfuel",
+      "marketCap": "$57.07 million"
+    },
+    {
+      "name": "MultiversX",
+      "symbol": "EGLD",
+      "slug": "omwkOTglq+multiversx-egld",
+      "url": "https://coinranking.com/coin/omwkOTglq+multiversx-egld",
+      "marketCap": "$94.07 million"
+    },
+    {
+      "name": "Band",
+      "symbol": "BAND",
+      "slug": "7q5-b6CZQ+band-band",
+      "url": "https://coinranking.com/coin/7q5-b6CZQ+band-band",
+      "marketCap": "$32.98 million"
+    },
+    {
+      "name": "Verge",
+      "symbol": "XVG",
+      "slug": "NXEHA2s6QvTyd+verge-xvg",
+      "url": "https://coinranking.com/coin/NXEHA2s6QvTyd+verge-xvg",
+      "marketCap": "$33.65 million"
+    },
+    {
+      "name": "Moonriver",
+      "symbol": "MOVR",
+      "slug": "fpZ3-YRAB+moonriver-movr",
+      "url": "https://coinranking.com/coin/fpZ3-YRAB+moonriver-movr",
+      "marketCap": "$7.03 million"
+    },
+    {
+      "name": "IoTeX",
+      "symbol": "IOTX",
+      "slug": "vLdnjGS6CZ3df+iotex-iotx",
+      "url": "https://coinranking.com/coin/vLdnjGS6CZ3df+iotex-iotx",
+      "marketCap": "$28.40 million"
+    },
+    {
+      "name": "Ontology",
+      "symbol": "ONT",
+      "slug": "itpeyyriqoiG2+ontology-ont",
+      "url": "https://coinranking.com/coin/itpeyyriqoiG2+ontology-ont",
+      "marketCap": "$41.11 million"
+    },
+    {
+      "name": "Horizen",
+      "symbol": "ZEN",
+      "slug": "5Qp1OINA8ABad+horizen-zen",
+      "url": "https://coinranking.com/coin/5Qp1OINA8ABad+horizen-zen",
+      "marketCap": "$93.84 million"
+    },
+    {
+      "name": "Tellor",
+      "symbol": "TRB",
+      "slug": "GDFVoYSg-+tellor-trb",
+      "url": "https://coinranking.com/coin/GDFVoYSg-+tellor-trb",
+      "marketCap": "$43.74 million"
+    },
+    {
+      "name": "Ravencoin",
+      "symbol": "RVN",
+      "slug": "Ru56fDlLB56-v+ravencoin-rvn",
+      "url": "https://coinranking.com/coin/Ru56fDlLB56-v+ravencoin-rvn",
+      "marketCap": "$21.04 million"
+    },
+    {
+      "name": "Status",
+      "symbol": "SNT",
+      "slug": "h6Bjn1mlb6Q2B+status-snt",
+      "url": "https://coinranking.com/coin/h6Bjn1mlb6Q2B+status-snt",
+      "marketCap": "$31.29 million"
+    },
+    {
+      "name": "Livepeer",
+      "symbol": "LPT",
+      "slug": "9JXKKzXYmIQ7E+livepeer-lpt",
+      "url": "https://coinranking.com/coin/9JXKKzXYmIQ7E+livepeer-lpt",
+      "marketCap": "$66.92 million"
+    },
+    {
+      "name": "VeChain",
+      "symbol": "VET",
+      "slug": "FEbS54wxo4oIl+vechain-vet",
+      "url": "https://coinranking.com/coin/FEbS54wxo4oIl+vechain-vet",
+      "marketCap": "$457.72 million"
+    },
+    {
+      "name": "Ethereum Name Service",
+      "symbol": "ENS",
+      "slug": "SLcGT3CwT+ethereumnameservice-ens",
+      "url": "https://coinranking.com/coin/SLcGT3CwT+ethereumnameservice-ens",
+      "marketCap": "$192.12 million"
+    },
+    {
+      "name": "Hive",
+      "symbol": "HIVE",
+      "slug": "k_zJYvV5P+hive-hive",
+      "url": "https://coinranking.com/coin/k_zJYvV5P+hive-hive",
+      "marketCap": "$25.90 million"
+    },
+    {
+      "name": "PAX Gold",
+      "symbol": "PAXG",
+      "slug": "YRTkUcMi+paxgold-paxg",
+      "url": "https://coinranking.com/coin/YRTkUcMi+paxgold-paxg",
+      "marketCap": "$1.84 billion"
+    },
+    {
+      "name": "WAX",
+      "symbol": "WAXP",
+      "slug": "xyNkSk64O+wax-waxp",
+      "url": "https://coinranking.com/coin/xyNkSk64O+wax-waxp",
+      "marketCap": "$17.74 million"
+    },
+    {
+      "name": "Bitcoin SV",
+      "symbol": "BSV",
+      "slug": "VcMY11NONHSA0+bitcoinsv-bsv",
+      "url": "https://coinranking.com/coin/VcMY11NONHSA0+bitcoinsv-bsv",
+      "marketCap": "$334.22 million"
+    },
+    {
+      "name": "Nervos Network",
+      "symbol": "CKB",
+      "slug": "BgL4kP0ws+nervosnetwork-ckb",
+      "url": "https://coinranking.com/coin/BgL4kP0ws+nervosnetwork-ckb",
+      "marketCap": "$48.13 million"
+    },
+    {
+      "name": "Tether Gold",
+      "symbol": "XAUT",
+      "slug": "Vuy-IUC7+tethergold-xaut",
+      "url": "https://coinranking.com/coin/Vuy-IUC7+tethergold-xaut",
+      "marketCap": "$3.07 billion"
+    },
+    {
+      "name": "eCash",
+      "symbol": "XEC",
+      "slug": "aQx_vW8s1+ecash-xec",
+      "url": "https://coinranking.com/coin/aQx_vW8s1+ecash-xec",
+      "marketCap": "$115.97 million"
+    },
+    {
+      "name": "Ethereum Classic",
+      "symbol": "ETC",
+      "slug": "hnfQfsYfeIGUQ+ethereumclassic-etc",
+      "url": "https://coinranking.com/coin/hnfQfsYfeIGUQ+ethereumclassic-etc",
+      "marketCap": "$1.10 billion"
+    },
+    {
+      "name": "The Graph",
+      "symbol": "GRT",
+      "slug": "qhd1biQ7M+thegraph-grt",
+      "url": "https://coinranking.com/coin/qhd1biQ7M+thegraph-grt",
+      "marketCap": "$207.12 million"
+    },
+    {
+      "name": "VeThor Token",
+      "symbol": "VTHO",
+      "slug": "gXwpJoPS-ULCE+vethortoken-vtho",
+      "url": "https://coinranking.com/coin/gXwpJoPS-ULCE+vethortoken-vtho",
+      "marketCap": "$54.05 million"
+    },
+    {
+      "name": "XRP",
+      "symbol": "XRP",
+      "slug": "-l8Mn2pVlRs-p+xrp-xrp",
+      "url": "https://coinranking.com/coin/-l8Mn2pVlRs-p+xrp-xrp",
+      "marketCap": "$69.68 billion"
+    },
+    {
+      "name": "Cardano",
+      "symbol": "ADA",
+      "slug": "qzawljRxB5bYu+cardano-ada",
+      "url": "https://coinranking.com/coin/qzawljRxB5bYu+cardano-ada",
+      "marketCap": "$6.82 billion"
+    },
+    {
+      "name": "Bitcoin Cash",
+      "symbol": "BCH",
+      "slug": "ZlZpzOJo43mIo+bitcoincash-bch",
+      "url": "https://coinranking.com/coin/ZlZpzOJo43mIo+bitcoincash-bch",
+      "marketCap": "$4.89 billion"
+    },
+    {
+      "name": "Ethereum",
+      "symbol": "ETH",
+      "slug": "razxDUgYGNAdQ+ethereum-eth",
+      "url": "https://coinranking.com/coin/razxDUgYGNAdQ+ethereum-eth",
+      "marketCap": "$261.04 billion"
+    },
+    {
+      "name": "Bitcoin",
+      "symbol": "BTC",
+      "slug": "Qwsogvtv82FCd+bitcoin-btc",
+      "url": "https://coinranking.com/coin/Qwsogvtv82FCd+bitcoin-btc",
+      "marketCap": "$1.51 trillion"
+    },
+    {
+      "name": "Dash",
+      "symbol": "DASH",
+      "slug": "C9DwH-T7MEGmo+dash-dash",
+      "url": "https://coinranking.com/coin/C9DwH-T7MEGmo+dash-dash",
+      "marketCap": "$614.87 million"
+    },
+    {
+      "name": "Axie Infinity",
+      "symbol": "AXS",
+      "slug": "gpRKmM16k+axieinfinity-axs",
+      "url": "https://coinranking.com/coin/gpRKmM16k+axieinfinity-axs",
+      "marketCap": "$145.34 million"
+    },
+    {
+      "name": "Request Network",
+      "symbol": "REQ",
+      "slug": "CTwz1vB2LylBf+requestnetwork-req",
+      "url": "https://coinranking.com/coin/CTwz1vB2LylBf+requestnetwork-req",
+      "marketCap": "$38.43 million"
+    },
+    {
+      "name": "NEO",
+      "symbol": "NEO",
+      "slug": "cVaOmQWainv7g+neo-neo",
+      "url": "https://coinranking.com/coin/cVaOmQWainv7g+neo-neo",
+      "marketCap": "$130.80 million"
+    },
+    {
+      "name": "Santos FC Fan Token",
+      "symbol": "SANTOS",
+      "slug": "QYyiWEtFo+santosfcfantoken-santos",
+      "url": "https://coinranking.com/coin/QYyiWEtFo+santosfcfantoken-santos",
+      "marketCap": "$6.38 million"
+    },
+    {
+      "name": "Alchemy Pay",
+      "symbol": "ACH",
+      "slug": "jrP7Ptsct+alchemypay-ach",
+      "url": "https://coinranking.com/coin/jrP7Ptsct+alchemypay-ach",
+      "marketCap": "$44.61 million"
+    },
+    {
+      "name": "ARPA Chain",
+      "symbol": "ARPA",
+      "slug": "VZtWgmCQu31rE+arpachain-arpa",
+      "url": "https://coinranking.com/coin/VZtWgmCQu31rE+arpachain-arpa",
+      "marketCap": "$14.24 million"
+    },
+    {
+      "name": "Chiliz",
+      "symbol": "CHZ",
+      "slug": "GSCt2y6YSgO26+chiliz-chz",
+      "url": "https://coinranking.com/coin/GSCt2y6YSgO26+chiliz-chz",
+      "marketCap": "$119.08 million"
+    },
+    {
+      "name": "XYO Network",
+      "symbol": "XYO",
+      "slug": "S4aaWcl1Ztx__+xyonetwork-xyo",
+      "url": "https://coinranking.com/coin/S4aaWcl1Ztx__+xyonetwork-xyo",
+      "marketCap": "$40.62 million"
+    },
+    {
+      "name": "Litecoin",
+      "symbol": "LTC",
+      "slug": "D7B1x_ks7WhV5+litecoin-ltc",
+      "url": "https://coinranking.com/coin/D7B1x_ks7WhV5+litecoin-ltc",
+      "marketCap": "$4.06 billion"
+    },
+    {
+      "name": "Prometeus",
+      "symbol": "PROM",
+      "slug": "-HYrdBaCAa3mC+prometeus-prom",
+      "url": "https://coinranking.com/coin/-HYrdBaCAa3mC+prometeus-prom",
+      "marketCap": "$96.41 million"
+    },
+    {
+      "name": "Algorand",
+      "symbol": "ALGO",
+      "slug": "TpHE2IShQw-sJ+algorand-algo",
+      "url": "https://coinranking.com/coin/TpHE2IShQw-sJ+algorand-algo",
+      "marketCap": "$859.68 million"
+    },
+    {
+      "name": "0x",
+      "symbol": "ZRX",
+      "slug": "jWvjEFGAtnhWN+0x-zrx",
+      "url": "https://coinranking.com/coin/jWvjEFGAtnhWN+0x-zrx",
+      "marketCap": "$76.90 million"
+    },
+    {
+      "name": "Tezos",
+      "symbol": "XTZ",
+      "slug": "fsIbGOEJWbzxG+tezos-xtz",
+      "url": "https://coinranking.com/coin/fsIbGOEJWbzxG+tezos-xtz",
+      "marketCap": "$282.33 million"
+    },
+    {
+      "name": "QTUM",
+      "symbol": "QTUM",
+      "slug": "bOm0xKUuDvCUu+qtum-qtum",
+      "url": "https://coinranking.com/coin/bOm0xKUuDvCUu+qtum-qtum",
+      "marketCap": "$74.89 million"
+    },
+    {
+      "name": "Dai",
+      "symbol": "DAI",
+      "slug": "MoTuySvg7+dai-dai",
+      "url": "https://coinranking.com/coin/MoTuySvg7+dai-dai",
+      "marketCap": "$4.49 billion"
+    },
+    {
+      "name": "Pundi X",
+      "symbol": "PUNDIX",
+      "slug": "pxmVr52k2+pundix-pundix",
+      "url": "https://coinranking.com/coin/pxmVr52k2+pundix-pundix",
+      "marketCap": "$23.73 million"
+    },
+    {
+      "name": "iExec RLC",
+      "symbol": "RLC",
+      "slug": "tLXTkXU90vdjq+iexecrlc-rlc",
+      "url": "https://coinranking.com/coin/tLXTkXU90vdjq+iexecrlc-rlc",
+      "marketCap": "$36.69 million"
+    },
+    {
+      "name": "Binance USD",
+      "symbol": "BUSD",
+      "slug": "vSo2fu9iE1s0Y+binanceusd-busd",
+      "url": "https://coinranking.com/coin/vSo2fu9iE1s0Y+binanceusd-busd",
+      "marketCap": "$34.50 million"
+    },
+    {
+      "name": "Mina Protocol Token",
+      "symbol": "MINA",
+      "slug": "J7st_qGwz+minaprotocoltoken-mina",
+      "url": "https://coinranking.com/coin/J7st_qGwz+minaprotocoltoken-mina",
+      "marketCap": "$67.62 million"
+    },
+    {
+      "name": "Tether USD",
+      "symbol": "USDT",
+      "slug": "HIVsRcGKkPFtW+tetherusd-usdt",
+      "url": "https://coinranking.com/coin/HIVsRcGKkPFtW+tetherusd-usdt",
+      "marketCap": "$176.96 billion"
+    },
+    {
+      "name": "USDC",
+      "symbol": "USDC",
+      "slug": "aKzUVe4Hh_CON+usdc-usdc",
+      "url": "https://coinranking.com/coin/aKzUVe4Hh_CON+usdc-usdc",
+      "marketCap": "$70.27 billion"
+    },
+    {
+      "name": "Chainlink",
+      "symbol": "LINK",
+      "slug": "VLqpJwogdhHNb+chainlink-link",
+      "url": "https://coinranking.com/coin/VLqpJwogdhHNb+chainlink-link",
+      "marketCap": "$8.23 billion"
+    },
+    {
+      "name": "Polkadot",
+      "symbol": "DOT",
+      "slug": "25W7FG7om+polkadot-dot",
+      "url": "https://coinranking.com/coin/25W7FG7om+polkadot-dot",
+      "marketCap": "$1.52 billion"
+    },
+    {
+      "name": "Origin protocol",
+      "symbol": "OGN",
+      "slug": "IdrU0Gp2cK+originprotocol-ogn",
+      "url": "https://coinranking.com/coin/IdrU0Gp2cK+originprotocol-ogn",
+      "marketCap": "$17.09 million"
+    },
+    {
+      "name": "ZIG Finance",
+      "symbol": "ZIG",
+      "slug": "fSas3RQ3NI6D+zigfinance-zig",
+      "url": "https://coinranking.com/coin/fSas3RQ3NI6D+zigfinance-zig",
+      "marketCap": "$56.85 million"
+    },
+    {
+      "name": "Quant",
+      "symbol": "QNT",
+      "slug": "bauj_21eYVwso+quant-qnt",
+      "url": "https://coinranking.com/coin/bauj_21eYVwso+quant-qnt",
+      "marketCap": "$2.42 billion"
+    },
+    {
+      "name": "Power Ledger",
+      "symbol": "POWR",
+      "slug": "vu0nUKwNtoITi+powerledger-powr",
+      "url": "https://coinranking.com/coin/vu0nUKwNtoITi+powerledger-powr",
+      "marketCap": "$30.41 million"
+    },
+    {
+      "name": "Civic",
+      "symbol": "CVC",
+      "slug": "_izgytAQa-RbV+civic-cvc",
+      "url": "https://coinranking.com/coin/_izgytAQa-RbV+civic-cvc",
+      "marketCap": "$21.12 million"
+    },
+    {
+      "name": "Uniswap",
+      "symbol": "UNI",
+      "slug": "_H5FVG9iW+uniswap-uni",
+      "url": "https://coinranking.com/coin/_H5FVG9iW+uniswap-uni",
+      "marketCap": "$4.35 billion"
+    },
+    {
+      "name": "IOTA",
+      "symbol": "IOTA",
+      "slug": "LtWwuVANwRzV_+iota-iota",
+      "url": "https://coinranking.com/coin/LtWwuVANwRzV_+iota-iota",
+      "marketCap": "$165.52 million"
+    },
+    {
+      "name": "Mask Network",
+      "symbol": "MASK",
+      "slug": "-YgC-v-wb+masknetwork-mask",
+      "url": "https://coinranking.com/coin/-YgC-v-wb+masknetwork-mask",
+      "marketCap": "$36.89 million"
+    },
+    {
+      "name": "SKALE",
+      "symbol": "SKL",
+      "slug": "jZyh6ZQup+skale-skl",
+      "url": "https://coinranking.com/coin/jZyh6ZQup+skale-skl",
+      "marketCap": "$23.28 million"
+    },
+    {
+      "name": "Monero",
+      "symbol": "XMR",
+      "slug": "3mVx2FX_iJFp5+monero-xmr",
+      "url": "https://coinranking.com/coin/3mVx2FX_iJFp5+monero-xmr",
+      "marketCap": "$11.28 billion"
+    },
+    {
+      "name": "Golem",
+      "symbol": "GLM",
+      "slug": "C6ddYx4P1+golem-glm",
+      "url": "https://coinranking.com/coin/C6ddYx4P1+golem-glm",
+      "marketCap": "$104.27 million"
+    },
+    {
+      "name": "Orchid Protocol",
+      "symbol": "OXT",
+      "slug": "Of-8L640D+orchidprotocol-oxt",
+      "url": "https://coinranking.com/coin/Of-8L640D+orchidprotocol-oxt",
+      "marketCap": "$7.48 million"
+    },
+    {
+      "name": "Ontology Gas",
+      "symbol": "ONG",
+      "slug": "gYWMiutOYQw6c+ontologygas-ong",
+      "url": "https://coinranking.com/coin/gYWMiutOYQw6c+ontologygas-ong",
+      "marketCap": "$30.76 million"
+    },
+    {
+      "name": "Casper",
+      "symbol": "CSPR",
+      "slug": "o35j_d524+casper-cspr",
+      "url": "https://coinranking.com/coin/o35j_d524+casper-cspr",
+      "marketCap": "$34.43 million"
+    },
+    {
+      "name": "Trust Wallet Token",
+      "symbol": "TWT",
+      "slug": "Hm3OlynlC+trustwallettoken-twt",
+      "url": "https://coinranking.com/coin/Hm3OlynlC+trustwallettoken-twt",
+      "marketCap": "$164.67 million"
+    },
+    {
+      "name": "BNB",
+      "symbol": "BNB",
+      "slug": "WcwrkfNI4FUAe+bnb-bnb",
+      "url": "https://coinranking.com/coin/WcwrkfNI4FUAe+bnb-bnb",
+      "marketCap": "$90.88 billion"
+    },
+    {
+      "name": "Radworks",
+      "symbol": "RAD",
+      "slug": "liwAwgA1O+radworks-rad",
+      "url": "https://coinranking.com/coin/liwAwgA1O+radworks-rad",
+      "marketCap": "$13.20 million"
+    },
+    {
+      "name": "Waves",
+      "symbol": "WAVES",
+      "slug": "J8xX4Fc9PxEat+waves-waves",
+      "url": "https://coinranking.com/coin/J8xX4Fc9PxEat+waves-waves",
+      "marketCap": "$30.16 million"
+    },
+    {
+      "name": "Wrapped BTC",
+      "symbol": "WBTC",
+      "slug": "x4WXHge-vvFY+wrappedbtc-wbtc",
+      "url": "https://coinranking.com/coin/x4WXHge-vvFY+wrappedbtc-wbtc",
+      "marketCap": "$9.54 billion"
+    },
+    {
+      "name": "ECOMI",
+      "symbol": "OMI",
+      "slug": "_xNnBDfLq2pF5+ecomi-omi",
+      "url": "https://coinranking.com/coin/_xNnBDfLq2pF5+ecomi-omi",
+      "marketCap": "$57.09 million"
+    },
+    {
+      "name": "Dogecoin",
+      "symbol": "DOGE",
+      "slug": "a91GCGd_u96cF+dogecoin-doge",
+      "url": "https://coinranking.com/coin/a91GCGd_u96cF+dogecoin-doge",
+      "marketCap": "$11.02 billion"
+    },
+    {
+      "name": "Siacoin",
+      "symbol": "SC",
+      "slug": "y9op7QPvbLERt+siacoin-sc",
+      "url": "https://coinranking.com/coin/y9op7QPvbLERt+siacoin-sc",
+      "marketCap": "$37.14 million"
+    },
+    {
+      "name": "Stellar",
+      "symbol": "XLM",
+      "slug": "f3iaFeCKEmkaZ+stellar-xlm",
+      "url": "https://coinranking.com/coin/f3iaFeCKEmkaZ+stellar-xlm",
+      "marketCap": "$5.25 billion"
+    },
+    {
+      "name": "Storj",
+      "symbol": "STORJ",
+      "slug": "_NvQ_iCjZu4Ay+storj-storj",
+      "url": "https://coinranking.com/coin/_NvQ_iCjZu4Ay+storj-storj",
+      "marketCap": "$7.84 million"
+    },
+    {
+      "name": "NEAR Protocol",
+      "symbol": "NEAR",
+      "slug": "DCrsaMv68+nearprotocol-near",
+      "url": "https://coinranking.com/coin/DCrsaMv68+nearprotocol-near",
+      "marketCap": "$4.76 billion"
+    },
+    {
+      "name": "OMG Network",
+      "symbol": "OMG",
+      "slug": "_tpssiAXwrHfr+omgnetwork-omg",
+      "url": "https://coinranking.com/coin/_tpssiAXwrHfr+omgnetwork-omg",
+      "marketCap": "$6.11 million"
+    },
+    {
+      "name": "Solana",
+      "symbol": "SOL",
+      "slug": "zNZHO_Sjf+solana-sol",
+      "url": "https://coinranking.com/coin/zNZHO_Sjf+solana-sol",
+      "marketCap": "$51.78 billion"
+    },
+    {
+      "name": "Helium",
+      "symbol": "HNT",
+      "slug": "rGDiacWtB+helium-hnt",
+      "url": "https://coinranking.com/coin/rGDiacWtB+helium-hnt",
+      "marketCap": "$55.06 million"
+    },
+    {
+      "name": "Gitcoin",
+      "symbol": "GTC",
+      "slug": "Q1yNY7qAI+gitcoin-gtc",
+      "url": "https://coinranking.com/coin/Q1yNY7qAI+gitcoin-gtc",
+      "marketCap": "$14.81 million"
+    },
+    {
+      "name": "BEAM",
+      "symbol": "BEAM",
+      "slug": "cYYMfXF4u+beam-beam",
+      "url": "https://coinranking.com/coin/cYYMfXF4u+beam-beam",
+      "marketCap": "$205.59 million"
+    },
+    {
+      "name": "Decred",
+      "symbol": "DCR",
+      "slug": "1wJlqkxIpJKLN+decred-dcr",
+      "url": "https://coinranking.com/coin/1wJlqkxIpJKLN+decred-dcr",
+      "marketCap": "$212.86 million"
+    },
+    {
+      "name": "Stacks",
+      "symbol": "STX",
+      "slug": "mMPrMcB7+stacks-stx",
+      "url": "https://coinranking.com/coin/mMPrMcB7+stacks-stx",
+      "marketCap": "$609.42 million"
+    },
+    {
+      "name": "Balancer",
+      "symbol": "BAL",
+      "slug": "dNi7Xe4uK+balancer-bal",
+      "url": "https://coinranking.com/coin/dNi7Xe4uK+balancer-bal",
+      "marketCap": "$8.23 million"
+    },
+    {
+      "name": "Dusk",
+      "symbol": "DUSK",
+      "slug": "E3w8cmrAs+dusk-dusk",
+      "url": "https://coinranking.com/coin/E3w8cmrAs+dusk-dusk",
+      "marketCap": "$44.03 million"
+    },
+    {
+      "name": "Bifrost ",
+      "symbol": "BFC",
+      "slug": "nighWmDcw+bifrost-bfc",
+      "url": "https://coinranking.com/coin/nighWmDcw+bifrost-bfc",
+      "marketCap": "$30.30 million"
+    },
+    {
+      "name": "Dent",
+      "symbol": "DENT",
+      "slug": "4UM6MucwFvYex+dent-dent",
+      "url": "https://coinranking.com/coin/4UM6MucwFvYex+dent-dent",
+      "marketCap": "$3.35 million"
+    },
+    {
+      "name": "Zcash",
+      "symbol": "ZEC",
+      "slug": "aRGRWLf2RYNq4+zcash-zec",
+      "url": "https://coinranking.com/coin/aRGRWLf2RYNq4+zcash-zec",
+      "marketCap": "$20.90 billion"
+    },
+    {
+      "name": "XDC Network",
+      "symbol": "XDC",
+      "slug": "77jGXSqWJ1ofG+xdcnetwork-xdc",
+      "url": "https://coinranking.com/coin/77jGXSqWJ1ofG+xdcnetwork-xdc",
+      "marketCap": "$640.60 million"
+    },
+    {
+      "name": "Electroneum",
+      "symbol": "ETN",
+      "slug": "hY7W7u5sB_neu+electroneum-etn",
+      "url": "https://coinranking.com/coin/hY7W7u5sB_neu+electroneum-etn",
+      "marketCap": "$21.57 million"
+    },
+    {
+      "name": "Marlin POND",
+      "symbol": "POND",
+      "slug": "APZJdoWV8+marlinpond-pond",
+      "url": "https://coinranking.com/coin/APZJdoWV8+marlinpond-pond",
+      "marketCap": "$10.20 million"
+    },
+    {
+      "name": "Xertra",
+      "symbol": "STRAX",
+      "slug": "il_9W9J71WMR8+xertra-strax",
+      "url": "https://coinranking.com/coin/il_9W9J71WMR8+xertra-strax",
+      "marketCap": "$20.19 million"
+    },
+    {
+      "name": "Lisk",
+      "symbol": "LSK",
+      "slug": "-8WmRrc-b_6dN+lisk-lsk",
+      "url": "https://coinranking.com/coin/-8WmRrc-b_6dN+lisk-lsk",
+      "marketCap": "$38.79 million"
+    },
+    {
+      "name": "Telcoin",
+      "symbol": "TEL",
+      "slug": "DDZt-yKX1Fo7U+telcoin-tel",
+      "url": "https://coinranking.com/coin/DDZt-yKX1Fo7U+telcoin-tel",
+      "marketCap": "$138.07 million"
+    },
+    {
+      "name": "ELYSIA",
+      "symbol": "EL",
+      "slug": "iDlE48d5j+elysia-el",
+      "url": "https://coinranking.com/coin/iDlE48d5j+elysia-el",
+      "marketCap": "$6.77 million"
+    },
+    {
+      "name": "Holo",
+      "symbol": "HOT",
+      "slug": "iEHCPwcxoIH8e+holo-hot",
+      "url": "https://coinranking.com/coin/iEHCPwcxoIH8e+holo-hot",
+      "marketCap": "$74.97 million"
+    },
+    {
+      "name": "DigiByte",
+      "symbol": "DGB",
+      "slug": "q9yo3-QDbH-lM+digibyte-dgb",
+      "url": "https://coinranking.com/coin/q9yo3-QDbH-lM+digibyte-dgb",
+      "marketCap": "$58.84 million"
+    },
+    {
+      "name": "Secret",
+      "symbol": "SCRT",
+      "slug": "mVp8pb1Us+secret-scrt",
+      "url": "https://coinranking.com/coin/mVp8pb1Us+secret-scrt",
+      "marketCap": "$2.27 million"
+    },
+    {
+      "name": "Harmony",
+      "symbol": "ONE",
+      "slug": "XtW6kus088In+harmony-one",
+      "url": "https://coinranking.com/coin/XtW6kus088In+harmony-one",
+      "marketCap": "$22.42 million"
+    },
+    {
+      "name": "EOS",
+      "symbol": "EOS",
+      "slug": "iAzbfXiBBKkR6+eos-eos",
+      "url": "https://coinranking.com/coin/iAzbfXiBBKkR6+eos-eos",
+      "marketCap": "$124.36 million"
+    },
+    {
+      "name": "Nano",
+      "symbol": "NANO",
+      "slug": "rcob7NHLyEr3p+nano-nano",
+      "url": "https://coinranking.com/coin/rcob7NHLyEr3p+nano-nano",
+      "marketCap": "$44.12 million"
+    },
+    {
+      "name": "aelf",
+      "symbol": "ELF",
+      "slug": "MvVrm09NjVxNR+aelf-elf",
+      "url": "https://coinranking.com/coin/MvVrm09NjVxNR+aelf-elf",
+      "marketCap": "$34.93 million"
+    },
+    {
+      "name": "Pirate Chain",
+      "symbol": "ARRR",
+      "slug": "Qo9Pks_KiZwQ+piratechain-arrr",
+      "url": "https://coinranking.com/coin/Qo9Pks_KiZwQ+piratechain-arrr",
+      "marketCap": "$34.86 million"
+    },
+    {
+      "name": "Symbol",
+      "symbol": "XYM",
+      "slug": "xr1XDYPNE+symbol-xym",
+      "url": "https://coinranking.com/coin/xr1XDYPNE+symbol-xym",
+      "marketCap": "$16.33 million"
+    },
+    {
+      "name": "MediBloc",
+      "symbol": "MED",
+      "slug": "nAJ_PE_LvVJJ2+medibloc-med",
+      "url": "https://coinranking.com/coin/nAJ_PE_LvVJJ2+medibloc-med",
+      "marketCap": "$15.40 million"
+    },
+    {
+      "name": "Comtech Gold",
+      "symbol": "CGO",
+      "slug": "PgJVnW0ID+comtechgold-cgo",
+      "url": "https://coinranking.com/coin/PgJVnW0ID+comtechgold-cgo",
+      "marketCap": "$14.44 million"
+    },
+    {
+      "name": "Firo",
+      "symbol": "FIRO",
+      "slug": "Kb7xrAfbJ0Qf3+firo-firo",
+      "url": "https://coinranking.com/coin/Kb7xrAfbJ0Qf3+firo-firo",
+      "marketCap": "$12.81 million"
+    },
+    {
+      "name": "Islamic Coin",
+      "symbol": "ISLM",
+      "slug": "CTwRCEBz3+islamiccoin-islm",
+      "url": "https://coinranking.com/coin/CTwRCEBz3+islamiccoin-islm",
+      "marketCap": "$8.91 million"
+    },
+    {
+      "name": "AERGO Chain",
+      "symbol": "AERGO",
+      "slug": "3hb2F5evE44f+aergochain-aergo",
+      "url": "https://coinranking.com/coin/3hb2F5evE44f+aergochain-aergo",
+      "marketCap": "$8.26 million"
+    },
+    {
+      "name": "Pepecoin",
+      "symbol": "PEP",
+      "slug": "Wjok-ajww+pepecoin-pep",
+      "url": "https://coinranking.com/coin/Wjok-ajww+pepecoin-pep",
+      "marketCap": "$7.60 million"
+    },
+    {
+      "name": "Assemble Protocol",
+      "symbol": "ASM",
+      "slug": "AjcxX01Ps+assembleprotocol-asm",
+      "url": "https://coinranking.com/coin/AjcxX01Ps+assembleprotocol-asm",
+      "marketCap": "$6.69 million"
+    },
+    {
+      "name": "district0x",
+      "symbol": "DNT",
+      "slug": "f5hHgH6PhD7xU+district0x-dnt",
+      "url": "https://coinranking.com/coin/f5hHgH6PhD7xU+district0x-dnt",
+      "marketCap": "$6.62 million"
+    },
+    {
+      "name": "Wanchain",
+      "symbol": "WAN",
+      "slug": "BvGJZJobvNrih+wanchain-wan",
+      "url": "https://coinranking.com/coin/BvGJZJobvNrih+wanchain-wan",
+      "marketCap": "$5.14 million"
+    },
+    {
+      "name": "Kryll",
+      "symbol": "KRL",
+      "slug": "xbO7pO6WnOAbD+kryll-krl",
+      "url": "https://coinranking.com/coin/xbO7pO6WnOAbD+kryll-krl",
+      "marketCap": "$4.86 million"
+    },
+    {
+      "name": "StormX",
+      "symbol": "STMX",
+      "slug": "-oseAsDmP+stormx-stmx",
+      "url": "https://coinranking.com/coin/-oseAsDmP+stormx-stmx",
+      "marketCap": "$4.47 million"
+    },
+    {
+      "name": "Measurable Data Token",
+      "symbol": "MDT",
+      "slug": "T7cVftafXrzzp+measurabledatatoken-mdt",
+      "url": "https://coinranking.com/coin/T7cVftafXrzzp+measurabledatatoken-mdt",
+      "marketCap": "$4.33 million"
+    },
+    {
+      "name": "Oraichain Token",
+      "symbol": "ORAI",
+      "slug": "b6MS3Guay+oraichaintoken-orai",
+      "url": "https://coinranking.com/coin/b6MS3Guay+oraichaintoken-orai",
+      "marketCap": "$4.26 million"
+    },
+    {
+      "name": "Bluzelle",
+      "symbol": "BLZ",
+      "slug": "XcGSBg2pO6MeB+bluzelle-blz",
+      "url": "https://coinranking.com/coin/XcGSBg2pO6MeB+bluzelle-blz",
+      "marketCap": "$3.80 million"
+    },
+    {
+      "name": "New Kind of Network",
+      "symbol": "NKN",
+      "slug": "LjR-NyhjF_LVw+newkindofnetwork-nkn",
+      "url": "https://coinranking.com/coin/LjR-NyhjF_LVw+newkindofnetwork-nkn",
+      "marketCap": "$3.33 million"
+    },
+    {
+      "name": "NEM",
+      "symbol": "XEM",
+      "slug": "DZtb-6X8yCx0h+nem-xem",
+      "url": "https://coinranking.com/coin/DZtb-6X8yCx0h+nem-xem",
+      "marketCap": "$2.88 million"
+    },
+    {
+      "name": "PIVX",
+      "symbol": "PIVX",
+      "slug": "JtJkDgMHqgK1K+pivx-pivx",
+      "url": "https://coinranking.com/coin/JtJkDgMHqgK1K+pivx-pivx",
+      "marketCap": "$2.67 million"
+    },
+    {
+      "name": "Meta",
+      "symbol": "MTA",
+      "slug": "fvNj4j5lW+meta-mta",
+      "url": "https://coinranking.com/coin/fvNj4j5lW+meta-mta",
+      "marketCap": "$2.65 million"
+    },
+    {
+      "name": "Syscoin",
+      "symbol": "SYS",
+      "slug": "VoX8kSSysw1Rt+syscoin-sys",
+      "url": "https://coinranking.com/coin/VoX8kSSysw1Rt+syscoin-sys",
+      "marketCap": "$2.13 million"
+    },
+    {
+      "name": "Hathor",
+      "symbol": "HTR",
+      "slug": "u_mkjBD5l+hathor-htr",
+      "url": "https://coinranking.com/coin/u_mkjBD5l+hathor-htr",
+      "marketCap": "$2.11 million"
+    },
+    {
+      "name": "Time",
+      "symbol": "TIME",
+      "slug": "LoAo6W2KwOyVc+time-time",
+      "url": "https://coinranking.com/coin/LoAo6W2KwOyVc+time-time",
+      "marketCap": "$2.08 million"
+    },
+    {
+      "name": "Nexus",
+      "symbol": "NXS",
+      "slug": "O0cuOKCmXrKJg+nexus-nxs",
+      "url": "https://coinranking.com/coin/O0cuOKCmXrKJg+nexus-nxs",
+      "marketCap": "$1.67 million"
+    },
+    {
+      "name": "KardiaChain",
+      "symbol": "KAI",
+      "slug": "2GfzFhCU3+kardiachain-kai",
+      "url": "https://coinranking.com/coin/2GfzFhCU3+kardiachain-kai",
+      "marketCap": "$1.61 million"
+    },
+    {
+      "name": "Hacken Token",
+      "symbol": "HAI",
+      "slug": "1Q-zqMmf6+hackentoken-hai",
+      "url": "https://coinranking.com/coin/1Q-zqMmf6+hackentoken-hai",
+      "marketCap": "$1.19 million"
+    },
+    {
+      "name": "Trias Token",
+      "symbol": "TRIAS",
+      "slug": "15aTm88eB+triastoken-trias",
+      "url": "https://coinranking.com/coin/15aTm88eB+triastoken-trias",
+      "marketCap": "$1.11 million"
+    },
+    {
+      "name": "TRWA",
+      "symbol": "TRWA",
+      "slug": "boWNC4brSQeX+trwa-trwa",
+      "url": "https://coinranking.com/coin/boWNC4brSQeX+trwa-trwa",
+      "marketCap": "$1.10 million"
+    },
+    {
+      "name": "Swash Token",
+      "symbol": "SWASH",
+      "slug": "W3nm1wGrn+swashtoken-swash",
+      "url": "https://coinranking.com/coin/W3nm1wGrn+swashtoken-swash",
+      "marketCap": "$936,556"
+    },
+    {
+      "name": "Persistence",
+      "symbol": "XPRT",
+      "slug": "5sZlrGPfT+persistence-xprt",
+      "url": "https://coinranking.com/coin/5sZlrGPfT+persistence-xprt",
+      "marketCap": "$697,207"
+    },
+    {
+      "name": "Streamr",
+      "symbol": "DATA",
+      "slug": "80NGUkVA1PJFD+streamr-data",
+      "url": "https://coinranking.com/coin/80NGUkVA1PJFD+streamr-data",
+      "marketCap": "$690,271"
+    },
+    {
+      "name": "Ultra",
+      "symbol": "UOS",
+      "slug": "bjb5p_MJm+ultra-uos",
+      "url": "https://coinranking.com/coin/bjb5p_MJm+ultra-uos",
+      "marketCap": "$399,053"
+    },
+    {
+      "name": "Solanium",
+      "symbol": "SLIM",
+      "slug": "GTUBhg6GW+solanium-slim",
+      "url": "https://coinranking.com/coin/GTUBhg6GW+solanium-slim",
+      "marketCap": "$353,336"
+    },
+    {
+      "name": "Komodo",
+      "symbol": "KMD",
+      "slug": "dAN7Te6RJoWUf+komodo-kmd",
+      "url": "https://coinranking.com/coin/dAN7Te6RJoWUf+komodo-kmd",
+      "marketCap": "$350,767"
+    },
+    {
+      "name": "FIO Protocol",
+      "symbol": "FIO",
+      "slug": "sdxCUpYxe+fioprotocol-fio",
+      "url": "https://coinranking.com/coin/sdxCUpYxe+fioprotocol-fio",
+      "marketCap": "$342,344"
+    },
+    {
+      "name": "Velas",
+      "symbol": "VLX",
+      "slug": "KOdD_-aqUHi0y+velas-vlx",
+      "url": "https://coinranking.com/coin/KOdD_-aqUHi0y+velas-vlx",
+      "marketCap": "$154,768"
+    },
+    {
+      "name": "HAPI",
+      "symbol": "HAPI",
+      "slug": "_L4iSZQyZ+hapi-hapi",
+      "url": "https://coinranking.com/coin/_L4iSZQyZ+hapi-hapi",
+      "marketCap": "$102,408"
+    },
+    {
+      "name": "ARIVA",
+      "symbol": "ARV",
+      "slug": "zrbxg19cI+ariva-arv",
+      "url": "https://coinranking.com/coin/zrbxg19cI+ariva-arv",
+      "marketCap": "$85,243"
+    },
+    {
+      "name": "Loom Network",
+      "symbol": "LOOM",
+      "slug": "UbSjA5FFVXk5p+loomnetwork-loom",
+      "url": "https://coinranking.com/coin/UbSjA5FFVXk5p+loomnetwork-loom",
+      "marketCap": "$77,610"
+    },
+    {
+      "name": "IRIS Network",
+      "symbol": "IRIS",
+      "slug": "9x7jpbfPuZ-u+irisnetwork-iris",
+      "url": "https://coinranking.com/coin/9x7jpbfPuZ-u+irisnetwork-iris",
+      "marketCap": "$26"
+    },
+    {
+      "name": "Polygon",
+      "symbol": "MATIC",
+      "slug": "uW2tk-ILY0ii+polygon-matic",
+      "url": "https://coinranking.com/coin/uW2tk-ILY0ii+polygon-matic",
+      "marketCap": "$3.97 billion"
+    },
+    {
+      "name": "Veritaseum",
+      "symbol": "VERI",
+      "slug": "Sxf2YMww313g1+veritaseum-veri",
+      "url": "https://coinranking.com/coin/Sxf2YMww313g1+veritaseum-veri",
+      "marketCap": "$747.39 million"
+    },
+    {
+      "name": "Klaytn",
+      "symbol": "KLAY",
+      "slug": "M9bj_WrX+klaytn-klay",
+      "url": "https://coinranking.com/coin/M9bj_WrX+klaytn-klay",
+      "marketCap": "$76.49 million"
+    },
+    {
+      "name": "Ocean Protocol",
+      "symbol": "OCEAN",
+      "slug": "aAKLSV5-0+oceanprotocol-ocean",
+      "url": "https://coinranking.com/coin/aAKLSV5-0+oceanprotocol-ocean",
+      "marketCap": "$34.52 million"
+    },
+    {
+      "name": "Litentry",
+      "symbol": "LIT",
+      "slug": "M_o6V12An+litentry-lit",
+      "url": "https://coinranking.com/coin/M_o6V12An+litentry-lit",
+      "marketCap": "$8.98 million"
+    },
+    {
+      "name": "Steem Dollars",
+      "symbol": "SBD",
+      "slug": "e2iNUmzKqdf9F+steemdollars-sbd",
+      "url": "https://coinranking.com/coin/e2iNUmzKqdf9F+steemdollars-sbd",
+      "marketCap": "$4.35 million"
+    },
+    {
+      "name": "Kadena",
+      "symbol": "KDA",
+      "slug": "sd_vIMPG+kadena-kda",
+      "url": "https://coinranking.com/coin/sd_vIMPG+kadena-kda",
+      "marketCap": "$2.52 million"
+    },
+    {
+      "name": "Orion Protocol",
+      "symbol": "ORN",
+      "slug": "FtSDbrt7Z+orionprotocol-orn",
+      "url": "https://coinranking.com/coin/FtSDbrt7Z+orionprotocol-orn",
+      "marketCap": "$999,747"
+    },
+    {
+      "name": "Quantstamp",
+      "symbol": "QSP",
+      "slug": "kkBXmKGORfFvS+quantstamp-qsp",
+      "url": "https://coinranking.com/coin/kkBXmKGORfFvS+quantstamp-qsp",
+      "marketCap": "$793,958"
+    },
+    {
+      "name": "ChronoTech Token",
+      "symbol": "TIME",
+      "slug": "sUe00fjJK+chronotechtoken-time",
+      "url": "https://coinranking.com/coin/sUe00fjJK+chronotechtoken-time",
+      "marketCap": "$35,612"
+    },
+    {
+      "name": "DigitalBits",
+      "symbol": "XDB",
+      "slug": "VlrFZe3Mq+digitalbits-xdb",
+      "url": "https://coinranking.com/coin/VlrFZe3Mq+digitalbits-xdb",
+      "marketCap": "$10,209"
+    },
+    {
+      "name": "ByteCoin",
+      "symbol": "BCN",
+      "slug": "UgmbLGC4VG594+bytecoin-bcn",
+      "url": "https://coinranking.com/coin/UgmbLGC4VG594+bytecoin-bcn",
+      "marketCap": "$--"
+    },
+    {
+      "name": "ICON",
+      "symbol": "ICX",
+      "slug": "U70EVFnDc6diV+icon-icx",
+      "url": "https://coinranking.com/coin/U70EVFnDc6diV+icon-icx",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Nebulas",
+      "symbol": "NAS",
+      "slug": "1Zj-7usqiPA6-+nebulas-nas",
+      "url": "https://coinranking.com/coin/1Zj-7usqiPA6-+nebulas-nas",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Waltonchain",
+      "symbol": "WTC",
+      "slug": "Z90WSKAjhslmJ+waltonchain-wtc",
+      "url": "https://coinranking.com/coin/Z90WSKAjhslmJ+waltonchain-wtc",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Nuls",
+      "symbol": "NULS",
+      "slug": "hzPIYf8xX5L1W+nuls-nuls",
+      "url": "https://coinranking.com/coin/hzPIYf8xX5L1W+nuls-nuls",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Cortex",
+      "symbol": "CTXC",
+      "slug": "IQ9uuZOL3DonF+cortex-ctxc",
+      "url": "https://coinranking.com/coin/IQ9uuZOL3DonF+cortex-ctxc",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Revain",
+      "symbol": "REV",
+      "slug": "bu0VTIyFnnh1u+revain-rev",
+      "url": "https://coinranking.com/coin/bu0VTIyFnnh1u+revain-rev",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Groestlcoin ",
+      "symbol": "GRS",
+      "slug": "G1dqJwcbn2Rfy+groestlcoin-grs",
+      "url": "https://coinranking.com/coin/G1dqJwcbn2Rfy+groestlcoin-grs",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Gifto",
+      "symbol": "GTO",
+      "slug": "qemBiPqr5eodB+gifto-gto",
+      "url": "https://coinranking.com/coin/qemBiPqr5eodB+gifto-gto",
+      "marketCap": "$--"
+    },
+    {
+      "name": "TomoChain",
+      "symbol": "TOMO",
+      "slug": "cO3IZ2ueIZlsH+tomochain-tomo",
+      "url": "https://coinranking.com/coin/cO3IZ2ueIZlsH+tomochain-tomo",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Neblio",
+      "symbol": "NEBL",
+      "slug": "zhlXyDdtv73vs+neblio-nebl",
+      "url": "https://coinranking.com/coin/zhlXyDdtv73vs+neblio-nebl",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Aragon Network Token",
+      "symbol": "ANT",
+      "slug": "eW3wHxPmmwlNp+aragonnetworktoken-ant",
+      "url": "https://coinranking.com/coin/eW3wHxPmmwlNp+aragonnetworktoken-ant",
+      "marketCap": "$--"
+    },
+    {
+      "name": "NavCoin",
+      "symbol": "NAV",
+      "slug": "dYrlRLv49YetE+navcoin-nav",
+      "url": "https://coinranking.com/coin/dYrlRLv49YetE+navcoin-nav",
+      "marketCap": "$--"
+    },
+    {
+      "name": "xMoney",
+      "symbol": "UTK",
+      "slug": "hEJCs2B9XeSu_+xmoney-utk",
+      "url": "https://coinranking.com/coin/hEJCs2B9XeSu_+xmoney-utk",
+      "marketCap": "$--"
+    },
+    {
+      "name": "SelfKey",
+      "symbol": "KEY",
+      "slug": "dbAbzE_C7wDzK+selfkey-key",
+      "url": "https://coinranking.com/coin/dbAbzE_C7wDzK+selfkey-key",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Simple Token",
+      "symbol": "OST",
+      "slug": "IVw3RZM9qynPL+simpletoken-ost",
+      "url": "https://coinranking.com/coin/IVw3RZM9qynPL+simpletoken-ost",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Dock",
+      "symbol": "DOCK",
+      "slug": "u0JllsU8KXYF2+dock-dock",
+      "url": "https://coinranking.com/coin/u0JllsU8KXYF2+dock-dock",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Monetha",
+      "symbol": "MTH",
+      "slug": "BlrcWgHxP6tHP+monetha-mth",
+      "url": "https://coinranking.com/coin/BlrcWgHxP6tHP+monetha-mth",
+      "marketCap": "$--"
+    },
+    {
+      "name": "Skrumble Network",
+      "symbol": "SKM",
+      "slug": "KxIBRwSK3Jl6k+skrumblenetwork-skm",
+      "url": "https://coinranking.com/coin/KxIBRwSK3Jl6k+skrumblenetwork-skm",
+      "marketCap": "$--"
+    }
+  ]
+}

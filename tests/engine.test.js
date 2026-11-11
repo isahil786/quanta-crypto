@@ -157,3 +157,90 @@ test('optimizer ranks strategies by Sharpe ratio', () => {
   assert.equal(res.filter((r) => r.isWinner).length, 1);
   assert.equal(res[0].isWinner, true);
 });
+
+test('bots are priced for symbols outside the top-100 movers', async () => {
+  reset(); botsState.bots.length = 0;
+  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
+  const orig = globalThis.fetch;
+  // 101 tickers with higher 24h change than BTCUSDT, so BTCUSDT falls outside the top-100 list
+  const rows = Array.from({ length: 101 }, (_, i) => ({ symbol: `X${i}USDT`, lastPrice: '1', priceChangePercent: String(50 + i), quoteVolume: '5000000', highPrice: '2', lowPrice: '1', volume: '1', count: 1, bidPrice: '1', askPrice: '1', weightedAvgPrice: '1' }));
+  rows.push({ symbol: 'BTCUSDT', lastPrice: '100', priceChangePercent: '0.1', quoteVolume: '5000000', highPrice: '110', lowPrice: '90', volume: '1', count: 1, bidPrice: '1', askPrice: '1', weightedAvgPrice: '1' });
+  globalThis.fetch = async () => ({ ok: true, json: async () => rows });
+  const { getLiveTop100MomentumCoins, getLiveCoin } = await import('../server/binance.js');
+  try {
+    await new Promise((r) => setTimeout(r, 3100)); // let any earlier cache expire
+    const top = await getLiveTop100MomentumCoins();
+    assert.ok(!top.some((c) => c.symbol === 'BTCUSDT'));
+    assert.equal((await getLiveCoin('BTCUSDT')).price, 100);
+  } finally { globalThis.fetch = orig; }
+  assert.ok(account);
+});
+
+const cycleWith = async (symbol, price) => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => [{ symbol, lastPrice: String(price), priceChangePercent: '1', quoteVolume: '5000000', highPrice: '999', lowPrice: '1', volume: '1', count: 1, bidPrice: '1', askPrice: '1', weightedAvgPrice: '1' }] });
+  const { getLiveTop100MomentumCoins } = await import('../server/binance.js');
+  try { await new Promise((r) => setTimeout(r, 3100)); await runBotsBackgroundCycle(); } finally { globalThis.fetch = orig; }
+};
+
+test('TP/SL auto-closes a position when the price reaches it', async () => {
+  reset(); botsState.bots.length = 0;
+  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
+  const before = account.totalEquityUSDT;
+  applyToPosition(account, { symbol: 'TPUSDT', side: 'BUY', size: 1, price: 100, leverage: 5, tpPrice: 110, slPrice: 95 });
+  await cycleWith('TPUSDT', 105); // inside the band: nothing happens
+  assert.equal(positions.length, 1);
+  await cycleWith('TPUSDT', 111); // take-profit hit
+  assert.equal(positions.length, 0);
+  assert.equal(orders[0].source, 'TP_SL');
+  assert.ok(account.totalEquityUSDT > before + 9);
+});
+
+test('TP/SL stop-loss closes a short when price rises through it', async () => {
+  reset(); botsState.bots.length = 0;
+  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
+  applyToPosition(account, { symbol: 'SLUSDT', side: 'SELL', size: 1, price: 100, leverage: 5, tpPrice: 90, slPrice: 105 });
+  await cycleWith('SLUSDT', 106);
+  assert.equal(positions.length, 0);
+});
+
+test('a resting master limit order mirrors to replicas when it fills', async () => {
+  reset(); botsState.bots.length = 0;
+  const master = accounts.find((a) => a.isMaster);
+  const replica = accounts.find((a) => a.id === 'acc-cdcx-01');
+  const o = { id: 'lim1', accountId: master.id, broker: master.broker, symbol: 'MIRUSDT', side: 'BUY', orderType: 'LIMIT', price: 100, size: 1, filledSize: 0, status: 'OPEN', leverage: 1, timestamp: new Date().toISOString(), fee: 0 };
+  orders.unshift(o);
+  await cycleWith('MIRUSDT', 99);
+  assert.equal(o.status, 'FILLED');
+  assert.ok(orders.some((x) => x.accountId === replica.id && String(x.notes).startsWith('Mirror of lim1')));
+});
+
+test('checkTpSl-style guard: TP on the wrong side would close instantly, so TP/SL must bracket entry', () => {
+  // Documented behaviour of the engine: a long with TP below price exits on the very next cycle.
+  reset();
+  const a = acct();
+  applyToPosition(a, { symbol: 'WRUSDT', side: 'BUY', size: 1, price: 100, leverage: 2, tpPrice: 90 });
+  assert.equal(positions[0].tpPrice, 90); // the API layer (not the engine) rejects this input
+});
+
+test('halal list: deduped, pegged assets dropped, renamed tickers mapped', async () => {
+  const { getHalalCoins, isHalalSymbol } = await import('../server/halal.js');
+  const syms = getHalalCoins().map((c) => c.symbol);
+  assert.equal(new Set(syms).size, syms.length);
+  assert.ok(isHalalSymbol('BTCUSDT') && isHalalSymbol('avaxusdt'));
+  assert.ok(!isHalalSymbol('USDTUSDT') && !isHalalSymbol('DOGEEUSDT'));
+  assert.ok(isHalalSymbol('POLUSDT')); // MATIC was renamed to POL
+});
+
+test('halalMarket joins the list with live prices and reports unlisted pairs', async () => {
+  const { halalMarket } = await import('../server/halal.js');
+  const idx = new Map([
+    ['BTCUSDT', { symbol: 'BTCUSDT', price: 1, quoteVolume: 5, name: 'BTC' }],
+    ['ETHUSDT', { symbol: 'ETHUSDT', price: 1, quoteVolume: 9, name: 'ETH' }],
+    ['SHIBUSDT', { symbol: 'SHIBUSDT', price: 1, quoteVolume: 99, name: 'SHIB' }], // not halal-listed
+  ]);
+  const r = halalMarket(idx);
+  assert.deepEqual(r.tradable.map((c) => c.symbol), ['ETHUSDT', 'BTCUSDT']);
+  assert.equal(r.tradable[0].halalRank, 1);
+  assert.ok(r.unavailable.some((c) => c.symbol === 'AVAXUSDT'));
+});

@@ -68,15 +68,17 @@ export default function App() {
       wsUrl.current.close();
     }
     const url = getWsUrl();
-    wsUrl.current = new WebSocket(url);
-    const currentSymbols = symbolsRef.current;
+    const ws = new WebSocket(url);
+    wsUrl.current = ws;
+    // The server streams at most 50 symbols; REST polling covers the rest
+    const currentSymbols = symbolsRef.current.slice(0, 50);
 
-    wsUrl.current.onopen = () => {
+    ws.onopen = () => {
       setWsConnected(true);
       setWsError(null);
       setTimeout(() => {
-        if (wsUrl.current && wsUrl.current.readyState === WebSocket.OPEN && currentSymbols.length > 0) {
-          wsUrl.current.send(JSON.stringify({
+        if (ws.readyState === WebSocket.OPEN && currentSymbols.length > 0) {
+          ws.send(JSON.stringify({
             type: 'subscribe_batch',
             symbols: currentSymbols,
           }));
@@ -84,12 +86,15 @@ export default function App() {
       }, 50);
     };
 
-    wsUrl.current.onmessage = (event) => {
+    ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'snapshot') {
-          setTickers(msg.data || []);
-          setFeedOk(true);
+          // An empty snapshot (server cache not warm yet) must not wipe tickers already loaded over REST
+          if (Array.isArray(msg.data) && msg.data.length > 0) {
+            setTickers(msg.data);
+            setFeedOk(true);
+          }
         } else if (msg.type === 'ticker') {
           applyTickerUpdate(msg.data);
           setFeedOk(true);
@@ -99,12 +104,16 @@ export default function App() {
       }
     };
 
-    wsUrl.current.onclose = () => {
-      setWsConnected(false);
-      wsUrl.current = null;
+    ws.onclose = () => {
+      // A replaced socket closing late must not clear the reference to its successor
+      if (wsUrl.current === ws) {
+        setWsConnected(false);
+        wsUrl.current = null;
+      }
     };
 
-    wsUrl.current.onerror = (err) => {
+    ws.onerror = () => {
+      if (wsUrl.current !== ws) return;
       setWsError('WebSocket connection failed');
       setWsConnected(false);
     };

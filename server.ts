@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   BROKERS,
@@ -23,10 +24,14 @@ import {
 } from './server/state.js';
 import { uid, mask, isPositiveNumber } from './server/util.js';
 import { checkMargin, settleOrderFill } from './server/positions.js';
+import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
+import { halalMarket, isHalalSymbol } from './server/halal.js';
 import {
-  cachedTop100,
   feedStatus,
   getLiveTop100MomentumCoins,
+  getLivePriceIndex,
+  getCachedTop100,
+  applyTickerUpdate,
   getLiveOrderBookDepth,
   getLiveRecentTrades,
   getLiveKlines,
@@ -60,11 +65,21 @@ app.use(express.json({ limit: '100kb' }));
 // Optional shared-secret auth. Set API_TOKEN to require `Authorization: Bearer <token>`
 // (or `x-api-token`) on every /api request. Strongly recommended whenever HOST is not loopback.
 const API_TOKEN = process.env.API_TOKEN || '';
+function tokenOk(supplied: string) {
+  if (!API_TOKEN) return true;
+  const a = crypto.createHash('sha256').update(String(supplied)).digest();
+  const b = crypto.createHash('sha256').update(API_TOKEN).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+// Health check for Render/Docker; registered before the auth middleware so probes work without a token
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', service: 'quanta-crypto', time: new Date().toISOString() });
+});
 app.use('/api', (req, res, next) => {
   if (!API_TOKEN) return next();
   const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   const supplied = bearer || (req.headers['x-api-token'] as string) || '';
-  if (supplied === API_TOKEN) return next();
+  if (tokenOk(supplied)) return next();
   res.status(401).json({ error: 'Unauthorized' });
 });
 
@@ -77,6 +92,17 @@ function sanitizeAccount(acc) {
 const num = (v) => Number(v);
 const VALID_SIDES = new Set(['BUY', 'SELL']);
 const VALID_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
+
+/** TP/SL sanity: they must be positive numbers on the profit/loss side of the entry. Returns an error string or null. */
+function checkTpSl(side: string, entry: number, tp: any, sl: any): string | null {
+  const has = (v) => v !== undefined && v !== null && v !== '';
+  if (has(tp) && !isPositiveNumber(tp)) return 'tpPrice must be a positive number';
+  if (has(sl) && !isPositiveNumber(sl)) return 'slPrice must be a positive number';
+  const long = side === 'BUY';
+  if (has(tp) && (long ? Number(tp) <= entry : Number(tp) >= entry)) return `For a ${side} order the take-profit must be ${long ? 'above' : 'below'} the entry price ${entry}`;
+  if (has(sl) && (long ? Number(sl) >= entry : Number(sl) <= entry)) return `For a ${side} order the stop-loss must be ${long ? 'below' : 'above'} the entry price ${entry}`;
+  return null;
+}
 
 // -------------------------------------------------------------
 // 1. Meta Endpoints
@@ -96,13 +122,6 @@ app.get('/api/meta/brokers', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// -------------------------------------------------------------
-// Health endpoint (Render health check)
-// -------------------------------------------------------------
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'quanta-crypto', time: new Date().toISOString() });
 });
 
 // -------------------------------------------------------------
@@ -240,6 +259,7 @@ app.delete('/api/accounts/:id', (req, res) => {
   }
   // Remove everything that referenced the account
   const drop = (arr) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i].accountId === removed.id) arr.splice(i, 1); };
+  for (const o of orders) if (o.accountId === removed.id && o.status === 'OPEN') { o.status = 'CANCELLED'; o.notes = 'Account removed'; }
   [positions, holdings, gttRules].forEach(drop);
   for (const b of botsState.bots) if (b.accountId === removed.id && b.status === 'RUNNING') b.status = 'CANCELLED';
   mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
@@ -255,6 +275,15 @@ app.get('/api/market/tickers', async (req, res) => {
     res.json(liveTop100);
   } catch (err) {
     res.status(500).json({ error: `Failed to fetch live Binance tickers: ${err.message}` });
+  }
+});
+
+// Halal-screened coins that have a live USDT pair (the whole list, not just the top-100 movers)
+app.get('/api/halal/coins', async (_req, res) => {
+  try {
+    res.json(halalMarket(await getLivePriceIndex()));
+  } catch (err) {
+    res.status(502).json({ error: process.env.NODE_ENV !== 'production' ? `Live market feed unavailable: ${(err as Error).message}` : 'Live market feed unavailable' });
   }
 });
 
@@ -415,13 +444,14 @@ app.post('/api/orders', async (req, res) => {
     }
 
     // Live reference price. Unknown symbols are rejected rather than filled at a made-up price.
-    const liveCoins = await getLiveTop100MomentumCoins();
-    const livePair = liveCoins.find((p) => p.symbol === symbol);
+    const livePair = (await getLivePriceIndex()).get(symbol);
     if (!livePair) {
-      return res.status(400).json({ error: `No live price for ${symbol}; it is not in the tracked Binance top-100 USDT list.` });
+      return res.status(400).json({ error: `No live price for ${symbol}; it is not a liquid Binance USDT pair.` });
     }
     const liveMarketPrice = livePair.price;
     const execPrice = orderType === 'MARKET' ? liveMarketPrice : num(req.body.price);
+    const tpSlError = checkTpSl(side, execPrice, tpPrice, slPrice);
+    if (tpSlError) return res.status(400).json({ error: tpSlError });
     const feePct = BROKERS[brokerId]?.capabilities?.feeEstimatePercent ?? 0.1;
 
     const newOrder: any = {
@@ -466,61 +496,7 @@ app.post('/api/orders', async (req, res) => {
     if (orders.length > 10000) orders.length = 10000;
 
     // Mirror trading: replicate only master orders that actually filled
-    if (account.isMaster && mirrorConfig.enabled && newOrder.status === 'FILLED') {
-      for (const replica of mirrorConfig.replicas) {
-        if (!replica.active || replica.accountId === account.id) continue;
-        const replicaAcc = accounts.find((a) => a.id === replica.accountId);
-        if (!replicaAcc) continue;
-
-        const replicaSize = Number((size * replica.multiplier).toFixed(8));
-        const logBase = { id: uid('mlog'), timestamp: new Date().toISOString(), masterOrder: `${newOrder.id} (${symbol} ${side} ${size})`, targetAccount: replicaAcc.accountName };
-        if (!isPositiveNumber(replicaSize)) {
-          mirrorConfig.logs.unshift({ ...logBase, status: 'SKIPPED', details: 'Replica size rounded to zero.' });
-          continue;
-        }
-
-        let replicaOrderType = orderType;
-        let adaptationNote = '';
-        if (replicaAcc.broker === 'coinswitch' && replicaAcc.segment === 'SPOT' && orderType === 'MARKET') {
-          replicaOrderType = 'LIMIT';
-          adaptationNote = 'Adapted MARKET order to LIMIT for CoinSwitch Spot compliance.';
-        }
-        const replicaLev = Math.min(leverage, replicaAcc.broker === 'delta' ? 100 : 20);
-        const repOrder: any = {
-          id: uid('ord-rep'),
-          accountId: replicaAcc.id,
-          broker: replicaAcc.broker,
-          symbol,
-          side,
-          orderType: replicaOrderType,
-          price: liveMarketPrice,
-          size: replicaSize,
-          filledSize: 0,
-          status: 'OPEN',
-          timeInForce: 'GTC',
-          leverage: replicaLev,
-          timestamp: new Date().toISOString(),
-          fee: 0,
-          notes: `Mirror of ${newOrder.id}`,
-        };
-
-        // Note: replicas fill at the same simulated reference price as the master, so there is no
-        // slippage to enforce; maxSlippagePercent is kept in the config for a future live mode.
-        const check = checkMargin(replicaAcc, repOrder, liveMarketPrice, BROKERS[replicaAcc.broker]?.capabilities?.feeEstimatePercent ?? 0.1);
-        if (!check.ok) {
-          mirrorConfig.logs.unshift({ ...logBase, status: 'REJECTED', details: check.reason });
-          continue;
-        }
-        settleOrderFill(replicaAcc, repOrder, liveMarketPrice, BROKERS[replicaAcc.broker]?.capabilities?.feeEstimatePercent ?? 0.1);
-        orders.unshift(repOrder);
-        mirrorConfig.logs.unshift({
-          ...logBase,
-          status: adaptationNote ? 'ADAPTED' : 'EXECUTED',
-          details: `${adaptationNote} Mirrored ${replicaSize} ${symbol} @ ${liveMarketPrice} (${replica.multiplier}x).`.trim(),
-        });
-      }
-      if (mirrorConfig.logs.length > 500) mirrorConfig.logs.length = 500;
-    }
+    if (shouldMirror(account, newOrder)) mirrorFilledOrder(account, newOrder, liveMarketPrice);
 
     res.status(201).json(newOrder);
   } catch (err) {
@@ -585,11 +561,11 @@ app.get('/api/trades', (req, res) => {
 
 app.get('/api/positions', async (req, res) => {
   try {
-    const liveCoins = await getLiveTop100MomentumCoins();
+    const liveCoins = await getLivePriceIndex();
 
     // Update unrealized PnL dynamically from real Binance prices
     const updated = positions.map((p) => {
-      const livePair = liveCoins.find((coin) => coin.symbol === p.symbol);
+      const livePair = liveCoins.get(p.symbol);
       const currentPrice = livePair ? livePair.price : p.markPrice;
       const priceDiff = p.side === 'LONG' ? currentPrice - p.entryPrice : p.entryPrice - currentPrice;
       const uPnl = Number((priceDiff * p.size).toFixed(2));
@@ -615,7 +591,7 @@ app.post('/api/positions/:id/close', async (req, res) => {
 
   let price = pos.markPrice;
   try {
-    const live = (await getLiveTop100MomentumCoins()).find((c) => c.symbol === pos.symbol);
+    const live = (await getLivePriceIndex()).get(pos.symbol);
     if (live) price = live.price;
   } catch {
     /* fall back to last stored mark price */
@@ -648,11 +624,11 @@ app.post('/api/positions/:id/close', async (req, res) => {
 
 app.get('/api/holdings', async (req, res) => {
   try {
-    const liveCoins = await getLiveTop100MomentumCoins();
+    const liveCoins = await getLivePriceIndex();
     const updated = holdings.map((h) => {
       if (h.asset === 'USDT') return h;
       const targetSym = `${h.asset}USDT`;
-      const livePair = liveCoins.find((c) => c.symbol === targetSym);
+      const livePair = liveCoins.get(targetSym);
       const rate = livePair ? livePair.price : h.rateUSDT;
       return {
         ...h,
@@ -691,6 +667,7 @@ app.post('/api/gtt', (req, res) => {
     return res.status(400).json({ error: 'symbol and a valid side (BUY/SELL) are required' });
   }
   if (!isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
+  if (condition !== undefined && !['ABOVE', 'BELOW'].includes(condition)) return res.status(400).json({ error: 'condition must be ABOVE or BELOW' });
   if (!isPositiveNumber(triggerPrice) && !isPositiveNumber(targetPrice) && !isPositiveNumber(stopLossPrice)) {
     return res.status(400).json({ error: 'Provide a triggerPrice, targetPrice or stopLossPrice' });
   }
@@ -796,8 +773,7 @@ app.get('/api/bots', (req, res) => {
 app.get('/api/bots/optimize-grid', async (req, res) => {
   try {
     const symbol = (req.query.symbol as string) || 'BTCUSDT';
-    const liveCoins = await getLiveTop100MomentumCoins();
-    const liveCoin = liveCoins.find((c) => c.symbol === symbol) || liveCoins[0];
+    const liveCoin = (await getLivePriceIndex()).get(symbol);
     if (!liveCoin) {
       return res.status(404).json({ error: 'Market pair not found in live feed' });
     }
@@ -847,11 +823,16 @@ app.post('/api/bots', async (req, res) => {
       // QSL params
       levelsEachSide,
       triggerLevel,
+      halalOnly,
     } = req.body;
 
     const account = accounts.find((a) => a.id === accountId);
     if (!account) {
       return res.status(404).json({ error: 'Target account not found' });
+    }
+    // HALAL_ONLY=true forces every bot onto the halal list; otherwise the client can opt in per bot
+    if ((process.env.HALAL_ONLY === 'true' || halalOnly === true) && !isHalalSymbol(String(symbol || ''))) {
+      return res.status(400).json({ error: `${symbol} is not on the halal coin list` });
     }
     if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT', 'QSL'].includes(type)) {
       return res.status(400).json({ error: 'type must be TWAP_SLICER, BREAKOUT_CHASER, GRID_BOT or QSL' });
@@ -864,6 +845,10 @@ app.post('/api/bots', async (req, res) => {
     }
     if (type === 'BREAKOUT_CHASER' && !(isPositiveNumber(triggerPrice) && isPositiveNumber(size))) {
       return res.status(400).json({ error: 'Breakout needs positive triggerPrice and size' });
+    }
+    if (type === 'BREAKOUT_CHASER') {
+      const e = checkTpSl(String(side).toUpperCase(), Number(triggerPrice), tpPrice, slPrice);
+      if (e) return res.status(400).json({ error: e });
     }
     if (type === 'GRID_BOT') {
       if (!(isPositiveNumber(lowerPrice) && num(upperPrice) > num(lowerPrice))) {
@@ -885,10 +870,9 @@ app.post('/api/bots', async (req, res) => {
       }
     }
 
-    const liveCoins = await getLiveTop100MomentumCoins();
-    const liveCoin = liveCoins.find((c) => c.symbol === symbol);
+    const liveCoin = (await getLivePriceIndex()).get(symbol);
     if (!liveCoin) {
-      return res.status(400).json({ error: `No live price for ${symbol}; it is not in the tracked Binance top-100 USDT list.` });
+      return res.status(400).json({ error: `No live price for ${symbol}; it is not a liquid Binance USDT pair.` });
     }
     const livePrice = liveCoin.price;
     const precision = liveCoin.precision;
@@ -1167,12 +1151,6 @@ const binanceWsBySymbol = new Map<string, WebSocket>();
 const wsClients = new Set<WebSocket>();
 const symbolBotCounts = new Map<string, number>();
 
-// OKX WebSocket fallback (Binance blocks Render IPs with HTTP 451).
-let okxWs: WebSocket | null = null;
-let okxConnecting = false;
-const okxSubscribedSymbols = new Set<string>();
-const okxPendingResubscribe = new Set<string>();
-
 function broadcast(message: any) {
   const payload = JSON.stringify(message);
   for (const client of wsClients) {
@@ -1182,9 +1160,13 @@ function broadcast(message: any) {
   }
 }
 
+const WS_SYMBOL_RE = /^[A-Z0-9]{5,12}$/;
+const MAX_WS_SYMBOLS = 50;
 function ensureBinanceWs(symbol: string) {
-  const sym = symbol.toUpperCase();
+  const sym = String(symbol).toUpperCase();
+  if (!WS_SYMBOL_RE.test(sym)) return;
   if (binanceWsBySymbol.has(sym)) return;
+  if (binanceWsBySymbol.size >= MAX_WS_SYMBOLS) return;
   const wsUrl = `wss://stream.binance.com:9443/ws/${sym.toLowerCase()}@ticker`;
   const bws = new WebSocket(wsUrl);
   binanceWsBySymbol.set(sym, bws);
@@ -1213,14 +1195,7 @@ function ensureBinanceWs(symbol: string) {
           source: 'ws',
         };
 
-        const idx = cachedTop100.findIndex((c) => c.symbol === data.s);
-        if (idx >= 0) {
-          cachedTop100[idx] = {
-            ...cachedTop100[idx],
-            ...priceUpdate,
-            lastUpdate: Date.now(),
-          };
-        }
+        applyTickerUpdate(data.s, priceUpdate);
 
         broadcast({ type: 'ticker', data: priceUpdate });
       }
@@ -1238,127 +1213,65 @@ function ensureBinanceWs(symbol: string) {
 
   bws.onerror = (err) => {
     console.error(`[WS] Binance ticker error for ${sym}:`, (err as Error).message);
-    // Binance blocks Render IPs (HTTP 451 / network errors): fall back to OKX in production only.
-    if (process.env.NODE_ENV === 'production' && subscribedSymbols.has(sym)) {
-      ensureOkxWs(sym);
-    }
+    // Binance blocked (HTTP 451 / network errors): fall back to OKX in production
+    if (process.env.NODE_ENV === 'production' && subscribedSymbols.has(sym)) ensureOkxWs(sym);
   };
 }
 
 // -------------------------------------------------------------
-// OKX WebSocket fallback (single shared connection for all symbols)
+// OKX WebSocket fallback (one shared connection) for when Binance streams are blocked (HTTP 451)
 // -------------------------------------------------------------
-function okxInstId(symbol: string) {
-  const s = symbol.toUpperCase();
-  return s.endsWith('USDT') ? s.slice(0, -4) + '-USDT' : s;
-}
-
-function okxSymbol(instId: string) {
-  return instId.replace('-', '');
-}
+let okxWs: WebSocket | null = null;
+let okxConnecting = false;
+const okxSubscribedSymbols = new Set<string>();
+const okxInstId = (s: string) => (s.endsWith('USDT') ? `${s.slice(0, -4)}-USDT` : s);
+const okxSymbol = (instId: string) => instId.replace('-', '');
 
 function sendOkxSubscribe() {
-  if (!okxWs || okxWs.readyState !== WebSocket.OPEN) return;
-  const args = Array.from(okxSubscribedSymbols).map((s) => ({
-    channel: 'tickers',
-    instId: okxInstId(s),
-  }));
-  if (args.length === 0) return;
-  okxWs.send(JSON.stringify({ op: 'subscribe', args }));
+  if (!okxWs || okxWs.readyState !== WebSocket.OPEN || okxSubscribedSymbols.size === 0) return;
+  okxWs.send(JSON.stringify({ op: 'subscribe', args: [...okxSubscribedSymbols].map((s) => ({ channel: 'tickers', instId: okxInstId(s) })) }));
 }
 
 function ensureOkxWs(symbol: string) {
-  const sym = symbol.toUpperCase();
-  okxSubscribedSymbols.add(sym);
-
-  if (okxWs) {
-    if (okxWs.readyState === WebSocket.OPEN) {
-      sendOkxSubscribe();
-      return;
-    }
-    if (okxWs.readyState === WebSocket.CONNECTING) return;
-  }
-
-  if (okxConnecting) return;
+  okxSubscribedSymbols.add(symbol.toUpperCase());
+  if (okxWs && okxWs.readyState === WebSocket.OPEN) return sendOkxSubscribe();
+  if (okxConnecting || (okxWs && okxWs.readyState === WebSocket.CONNECTING)) return;
   okxConnecting = true;
-
-  const wsUrl = 'wss://ws.okx.com:8443/ws/v5/public';
-  const ows = new WebSocket(wsUrl);
+  const ows = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
   okxWs = ows;
-
-  ows.onopen = () => {
-    okxConnecting = false;
-    console.log('[WS] OKX ticker connected');
-    sendOkxSubscribe();
-  };
-
+  ows.onopen = () => { okxConnecting = false; console.log('[WS] OKX ticker connected'); sendOkxSubscribe(); };
   ows.onmessage = (event) => {
     try {
-      const data = JSON.parse(event.data as string);
-      if (data.arg?.channel === 'tickers' && Array.isArray(data.data)) {
-        for (const t of data.data) {
-          const sym = okxSymbol(t.instId);
-          const last = parseFloat(t.last);
-          const open24h = parseFloat(t.open24h || '0');
-          const change24h = open24h > 0 ? ((last - open24h) / open24h) * 100 : 0;
-          const priceUpdate = {
-            symbol: sym,
-            price: last,
-            change24h: Number(change24h.toFixed(2)),
-            high24h: parseFloat(t.high24h || last),
-            low24h: parseFloat(t.low24h || last),
-            volume: parseFloat(t.vol24h || '0'),
-            quoteVolume: parseFloat(t.volCcy24h || '0'),
-            count: undefined,
-            weightedAvgPrice: last,
-            bidPrice: parseFloat(t.bidPx || last),
-            askPrice: parseFloat(t.askPx || last),
-            timestamp: parseFloat(t.ts || Date.now()),
-            source: 'ws-okx',
-          };
-
-          const idx = cachedTop100.findIndex((c) => c.symbol === sym);
-          if (idx >= 0) {
-            cachedTop100[idx] = {
-              ...cachedTop100[idx],
-              ...priceUpdate,
-              lastUpdate: Date.now(),
-            };
-          }
-
-          broadcast({ type: 'ticker', data: priceUpdate });
-        }
+      const msg = JSON.parse(event.data as string);
+      if (msg.arg?.channel !== 'tickers' || !Array.isArray(msg.data)) return;
+      for (const t of msg.data) {
+        const sym = okxSymbol(t.instId);
+        const last = parseFloat(t.last);
+        const open24h = parseFloat(t.open24h || '0');
+        const update = {
+          symbol: sym, price: last,
+          change24h: Number((open24h > 0 ? ((last - open24h) / open24h) * 100 : 0).toFixed(2)),
+          high24h: parseFloat(t.high24h || last), low24h: parseFloat(t.low24h || last),
+          volume: parseFloat(t.vol24h || '0'), quoteVolume: parseFloat(t.volCcy24h || '0'),
+          bidPrice: parseFloat(t.bidPx || last), askPrice: parseFloat(t.askPx || last),
+          timestamp: parseFloat(t.ts || Date.now()), source: 'ws-okx',
+        };
+        applyTickerUpdate(sym, update);
+        broadcast({ type: 'ticker', data: update });
       }
-    } catch {
-      // ignore malformed messages
-    }
+    } catch { /* ignore malformed messages */ }
   };
-
   ows.onclose = () => {
     okxConnecting = false;
     if (okxWs === ows) okxWs = null;
-    if (okxSubscribedSymbols.size > 0) {
-      setTimeout(() => {
-        okxWs = null;
-        const syms = [...okxSubscribedSymbols];
-        okxSubscribedSymbols.clear();
-        for (const s of syms) ensureOkxWs(s);
-      }, 3000);
-    }
+    if (okxSubscribedSymbols.size > 0) setTimeout(() => { const syms = [...okxSubscribedSymbols]; okxSubscribedSymbols.clear(); syms.forEach(ensureOkxWs); }, 3000);
   };
-
-  ows.onerror = (err) => {
-    console.error(`[WS] OKX ticker error:`, (err as Error).message);
-  };
+  ows.onerror = (err) => console.error('[WS] OKX ticker error:', (err as Error).message);
 }
 
 function unsubscribeOkxWs(symbol: string) {
-  const sym = symbol.toUpperCase();
-  okxSubscribedSymbols.delete(sym);
-  if (okxSubscribedSymbols.size === 0 && okxWs) {
-    okxWs.close();
-    okxWs = null;
-  }
+  okxSubscribedSymbols.delete(symbol.toUpperCase());
+  if (okxSubscribedSymbols.size === 0 && okxWs) { okxWs.close(); okxWs = null; }
 }
 
 function unsubscribeBinanceWs(symbol: string) {
@@ -1372,7 +1285,16 @@ function unsubscribeBinanceWs(symbol: string) {
     binanceWsBySymbol.delete(sym);
     console.log(`[WS] Binance ticker unsubscribed: ${sym}`);
   }
+  unsubscribeOkxWs(sym);
 }
+
+// Unknown /api routes and malformed JSON should return JSON, not the SPA page or an HTML stack trace
+app.use('/api', (req, res) => res.status(404).json({ error: `No such endpoint: ${req.method} ${req.originalUrl}` }));
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({ error: status === 400 ? 'Malformed request body' : process.env.NODE_ENV !== 'production' ? err.message || 'Internal error' : 'Internal error' });
+});
 
 async function startServer() {
   if (isDev) {
@@ -1391,12 +1313,13 @@ async function startServer() {
   }
 
   startBotLoop();
-  const HOST = process.env.HOST || '0.0.0.0';
+  // Containers (Render/Docker) must listen on all interfaces; local dev stays on loopback
+  const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
+  if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
+    throw new Error('Refusing to start on a non-loopback address without API_TOKEN set. The trading API would be unauthenticated.');
+  }
   const server = app.listen(PORT, HOST, () => {
     console.log(`QuantaCrypto Terminal (paper trading) running at http://${HOST}:${PORT}`);
-    if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
-      console.warn('WARNING: listening on a non-loopback address without API_TOKEN set. The API is unauthenticated.');
-    }
   });
 
   const wss = new WebSocketServer({ server, path: '/ws' });
@@ -1406,14 +1329,14 @@ async function startServer() {
 
     ws.send(JSON.stringify({
       type: 'snapshot',
-      data: cachedTop100,
-      count: cachedTop100.length,
+      data: getCachedTop100(),
+      count: getCachedTop100().length,
     }));
 
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string);
-        if (msg.type === 'subscribe' && msg.symbol) {
+        if (msg.type === 'subscribe' && typeof msg.symbol === 'string' && WS_SYMBOL_RE.test(msg.symbol.toUpperCase())) {
           subscribedSymbols.add(msg.symbol.toUpperCase());
           ensureBinanceWs(msg.symbol.toUpperCase());
           ws.send(JSON.stringify({
@@ -1421,7 +1344,8 @@ async function startServer() {
             symbol: msg.symbol.toUpperCase(),
           }));
         } else if (msg.type === 'subscribe_batch' && Array.isArray(msg.symbols)) {
-          for (const sym of msg.symbols) {
+          for (const sym of msg.symbols.slice(0, MAX_WS_SYMBOLS)) {
+            if (typeof sym !== 'string' || !WS_SYMBOL_RE.test(sym.toUpperCase())) continue;
             subscribedSymbols.add(sym.toUpperCase());
             ensureBinanceWs(sym.toUpperCase());
           }

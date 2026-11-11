@@ -13,9 +13,10 @@ export const STABLE_PAIRS = new Set([
   'DAIUSDT', 'AEURUSDT', 'USDPUSDT', 'WBTCUSDT', 'WBETHUSDT',
 ]);
 
-export const LEVERAGED_RE = /^(BTC|ETH|BNB|ADA|XRP|LINK|DOT|LTC|EOS|TRX|XLM|BCH|SXP|FIL|AAVE|SUSHI|UNI|1INCH|YFI)(UP|DOWN|BULL|BEAR)USDT$/;
-
-export let cachedTop100 = [];
+let cachedTop100 = [];
+// Every liquid USDT pair (not just the top 100 by 24h change). Bots, GTT rules, orders and
+// positions must be priced for any tradable symbol, e.g. BTCUSDT even when it is not a top mover.
+let cachedIndex = new Map();
 let lastFetchTime = 0;
 let inflight = null; // dedupes concurrent fetches
 export const feedStatus = { stale: false, lastError: null, lastSuccess: 0 };
@@ -29,12 +30,8 @@ const BINANCE_HOSTS = [
   'https://api3.binance.com',
   'https://api4.binance.com',
 ];
-
 const FETCH_TIMEOUT_MS = 10000;
 
-/**
- * Try a fetch across multiple Binance hostnames until one succeeds.
- */
 async function fetchBinance(urlPath, init = {}) {
   let lastErr;
   for (const base of BINANCE_HOSTS) {
@@ -44,9 +41,7 @@ async function fetchBinance(urlPath, init = {}) {
       timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       const res = await fetch(`${base}${urlPath}`, { signal: controller.signal, ...init });
       clearTimeout(timeout);
-      if (!res.ok) {
-        throw new Error(`Binance HTTP ${res.status}: ${res.statusText}`);
-      }
+      if (!res.ok) throw new Error(`Binance HTTP ${res.status}: ${res.statusText}`);
       return res;
     } catch (err) {
       clearTimeout(timeout);
@@ -56,6 +51,9 @@ async function fetchBinance(urlPath, init = {}) {
   throw lastErr;
 }
 
+// Legacy Binance leveraged tokens (BTCUP, ETHDOWN, ...). Matching a bare "UP" suffix
+// would wrongly drop real coins such as JUP, so the base must be a known major.
+export const LEVERAGED_RE = /^(BTC|ETH|BNB|ADA|XRP|LINK|DOT|LTC|EOS|TRX|XLM|BCH|SXP|FIL|AAVE|SUSHI|UNI|1INCH|YFI)(UP|DOWN|BULL|BEAR)USDT$/;
 const CACHE_TTL_MS = 3000; // 3 seconds refresh
 
 /**
@@ -84,9 +82,35 @@ export async function getLiveTop100MomentumCoins() {
   return inflight;
 }
 
+/** Snapshot of the cached top-100 list (empty until the first successful fetch). */
+export function getCachedTop100() {
+  return cachedTop100;
+}
+
+/** Symbol -> live coin for every liquid USDT pair. Refreshes the cache if stale. */
+export async function getLivePriceIndex() {
+  await getLiveTop100MomentumCoins();
+  return cachedIndex;
+}
+
+/** Live coin for any tracked USDT symbol, or undefined. */
+export async function getLiveCoin(symbol) {
+  return (await getLivePriceIndex()).get(String(symbol).toUpperCase());
+}
+
+/** Merge a websocket ticker update into the caches. */
+export function applyTickerUpdate(symbol, update) {
+  const merge = (c) => ({ ...c, ...update, lastUpdate: Date.now() });
+  const i = cachedTop100.findIndex((c) => c.symbol === symbol);
+  if (i >= 0) cachedTop100[i] = merge(cachedTop100[i]);
+  const c = cachedIndex.get(symbol);
+  if (c) cachedIndex.set(symbol, merge(c));
+}
+
 async function fetchTop100(now) {
   try {
     const res = await fetchBinance('/api/v3/ticker/24hr');
+
     const allTickers = await res.json();
 
     // Filter valid liquid USDT pairs
@@ -153,6 +177,7 @@ async function fetchTop100(now) {
     }));
 
     cachedTop100 = top100;
+    cachedIndex = new Map(scored.map((c) => [c.symbol, c]));
     lastFetchTime = now;
     feedStatus.stale = false;
     feedStatus.lastError = null;
@@ -163,19 +188,20 @@ async function fetchTop100(now) {
     feedStatus.stale = true;
     feedStatus.lastError = err.message;
     if (cachedTop100.length > 0) return cachedTop100;
-    // Binance fully blocked (e.g. HTTP 451 from Render IPs): fall back to OKX tickers.
-    try {
-      const okxCoins = await okxTop100();
-      cachedTop100 = okxCoins;
-      lastFetchTime = now;
-      feedStatus.stale = false;
-      feedStatus.lastError = null;
-      feedStatus.lastSuccess = now;
-      return okxCoins;
-    } catch (okxErr) {
-      console.error('OKX Live Data Fetch Error:', okxErr.message);
-      feedStatus.lastError = `${err.message} | OKX: ${okxErr.message}`;
-      throw err;
+    // Binance fully blocked (e.g. HTTP 451 from Render IPs): fall back to OKX tickers in production only.
+    if (process.env.NODE_ENV === 'production') {
+      try {
+        const okxCoins = await okxTop100();
+        cachedTop100 = okxCoins;
+        cachedIndex = new Map(okxCoins.map((c) => [c.symbol, c]));
+        lastFetchTime = now;
+        feedStatus.stale = false;
+        feedStatus.lastError = null;
+        feedStatus.lastSuccess = now;
+        return cachedTop100;
+      } catch (okxErr) {
+        console.error('OKX Live Data Fetch Error:', okxErr.message);
+      }
     }
   }
 }
@@ -239,11 +265,10 @@ export async function getLiveOrderBookDepth(symbol = 'BTCUSDT', limit = 15) {
     };
   } catch (err) {
     console.error(`Failed to fetch live depth for ${symbol}:`, err.message);
-    // Binance blocks Render IPs (HTTP 451): fall back to OKX in production.
+    // Binance blocked (HTTP 451) or down: fall back to OKX in production only.
     if (process.env.NODE_ENV === 'production') {
       try {
-        const okxDepthData = await okxDepth(symbol, limit);
-        return okxDepthData;
+        return await okxDepth(symbol, limit);
       } catch (okxErr) {
         console.error(`OKX depth fallback failed for ${symbol}:`, okxErr.message);
       }
@@ -278,11 +303,10 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
     })).reverse();
   } catch (err) {
     console.error(`Failed to fetch live trades for ${symbol}:`, err.message);
-    // Binance blocks Render IPs (HTTP 451): fall back to OKX in production.
+    // Binance blocked (HTTP 451) or down: fall back to OKX in production only.
     if (process.env.NODE_ENV === 'production') {
       try {
-        const okxTradesData = await okxTrades(symbol, limit);
-        return okxTradesData;
+        return await okxTrades(symbol, limit);
       } catch (okxErr) {
         console.error(`OKX trades fallback failed for ${symbol}:`, okxErr.message);
       }
@@ -293,6 +317,7 @@ export async function getLiveRecentTrades(symbol = 'BTCUSDT', limit = 20) {
 
 /**
  * Fetch live historical candles (klines) from Binance for any symbol
+ * Intervals supported: '15m', '30m', '1h', '2h', '4h', '1d'
  */
 export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit = 500) {
   try {
@@ -321,11 +346,10 @@ export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit =
     }));
   } catch (err) {
     console.error(`Failed to fetch live klines for ${symbol}:`, err.message);
-    // Binance blocks Render IPs (HTTP 451): fall back to OKX in production.
+    // Binance blocked (HTTP 451) or down: fall back to OKX in production only.
     if (process.env.NODE_ENV === 'production') {
       try {
-        const okxKlinesData = await okxKlines(symbol, interval, limit);
-        return okxKlinesData;
+        return await okxKlines(symbol, interval, limit);
       } catch (okxErr) {
         console.error(`OKX klines fallback failed for ${symbol}:`, okxErr.message);
       }

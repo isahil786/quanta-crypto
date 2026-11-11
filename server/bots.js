@@ -2,10 +2,11 @@
 // Advanced Volatility Grid, TWAP Micro-Slicer, and Momentum Breakout Radar
 // Synchronized with live Binance Public API v3 market data
 
-import { getLiveTop100MomentumCoins } from './binance.js';
-import { orders, trades, gttRules, accounts } from './state.js';
+import { getLivePriceIndex } from './binance.js';
+import { orders, trades, gttRules, accounts, positions } from './state.js';
 import { BROKERS } from './brokers/index.js';
 import { checkMargin, settleOrderFill, baseInventory } from './positions.js';
+import { shouldMirror, mirrorFilledOrder } from './mirror.js';
 import { uid, capList } from './util.js';
 
 export const botsState = {
@@ -211,6 +212,19 @@ function log(bot, text) {
 const feePctFor = (broker) => BROKERS[broker]?.capabilities?.feeEstimatePercent ?? 0.1;
 
 /**
+ * Shared fill pipeline: margin check, settle, record order, cap history.
+ * Used by executeFill (bots/TWAP/grid/QSL) and runPositionExits (TP/SL exits) so all fill paths behave identically.
+ */
+function settleAndRecord(account, order, price, feePct) {
+  const check = checkMargin(account, order, price, feePct);
+  if (!check.ok) return { ok: false, reason: check.reason };
+  const trade = settleOrderFill(account, order, price, feePct);
+  orders.unshift(order);
+  capList(orders, MAX_HISTORY);
+  return { ok: true, order, trade };
+}
+
+/**
  * Execute a simulated fill through the same accounting as manual orders
  * (margin / balances, positions, fees, trade book). Returns { ok, order, trade } or { ok:false, reason }.
  */
@@ -223,12 +237,7 @@ function executeFill({ bot, side, price, size, orderType = 'LIMIT', timeInForce 
     price, size, filledSize: 0, status: 'OPEN', timeInForce, leverage, tpPrice, slPrice,
     timestamp: new Date().toISOString(), fee: 0, source: 'BOT', botId: bot.id,
   };
-  const check = checkMargin(account, order, price, feePct);
-  if (!check.ok) return { ok: false, reason: check.reason };
-  const trade = settleOrderFill(account, order, price, feePct);
-  orders.unshift(order);
-  capList(orders, MAX_HISTORY);
-  return { ok: true, order, trade };
+  return settleAndRecord(account, order, price, feePct);
 }
 
 /** Log a rejection once per distinct reason so a starved bot doesn't spam its log every cycle. */
@@ -293,7 +302,7 @@ function runBreakout(bot, livePrice) {
     return;
   }
   bot.status = 'COMPLETED';
-  log(bot, `BREAKOUT CONFIRMED: $${livePrice} crossed trigger $${bot.triggerPrice}. Filled #${res.order.id}. TP/SL are recorded on the order only (not auto-executed by this bot).`);
+  log(bot, `BREAKOUT CONFIRMED: $${livePrice} crossed trigger $${bot.triggerPrice}. Filled #${res.order.id}. TP/SL are attached to the resulting position and auto-close it when reached (futures/leveraged accounts only).`);
 }
 
 function runGrid(bot, livePrice) {
@@ -350,26 +359,28 @@ function runGrid(bot, livePrice) {
 
 /** Recenter QSL square levels around the current live price. */
 function recenterQSL(bot, livePrice) {
-  const decimals = f_decimalPlaces(livePrice);
-  const multiplier = Math.pow(10, decimals);
-  const newBaseNumber = f_naturalNumber(livePrice);
-  if (newBaseNumber === bot.baseNumber) return;
+  // The tick multiplier is fixed at creation (Pine's mintick). Re-deriving it from the current
+  // price string would change the level scale whenever the price gains or loses a decimal digit.
+  const decimals = bot.decimalPlaces ?? f_decimalPlaces(livePrice);
+  const multiplier = bot.multiplier || Math.pow(10, decimals);
+  const newBaseNumber = Math.round(Math.sqrt(livePrice * multiplier));
+  if (newBaseNumber === bot.baseNumber) return false;
 
   const newLevels = generateSquareLevels({
     centerNumber: newBaseNumber,
     levelsEachSide: bot.levelsEachSide,
     currentPrice: livePrice,
     multiplier,
-    precision: bot.decimalPlaces || decimals,
+    sizePerGrid: bot.sizePerGrid, // previously omitted -> every recentred level silently used size 1
+    precision: decimals,
   });
 
   bot.levels = newLevels;
-  bot.baseNumber = newBaseNumber;
-  bot.multiplier = multiplier;
-  bot.decimalPlaces = decimals;
+  bot.rungs = newLevels; // keep the UI-facing ladder in sync
   bot.initialPrice = livePrice;
   bot.inventoryCostBasis = bot.inventoryCostBasis || livePrice;
   log(bot, `[QSL Recenter] Base #${newBaseNumber}, levels recalculated @ $${livePrice.toLocaleString()}.`);
+  return true;
 }
 
 /** Run one QSL cycle: process square-level fills and auto-recenter on trigger. */
@@ -393,10 +404,7 @@ function runQSL(bot, livePrice) {
     const lowerRung = levels.find((r) => r.offset === -triggerIndex);
     const upperTrigger = upperRung && livePrice >= upperRung.price;
     const lowerTrigger = lowerRung && livePrice <= lowerRung.price;
-    if (upperTrigger || lowerTrigger) {
-      recenterQSL(bot, livePrice);
-      return;
-    }
+    if ((upperTrigger || lowerTrigger) && recenterQSL(bot, livePrice)) return;
   }
 
   for (const rung of levels) {
@@ -439,10 +447,10 @@ function runQSL(bot, livePrice) {
 }
 
 /** Evaluate GTT / conditional rules against live prices. */
-function runGtt(liveCoins) {
+function runGtt(liveCoins) {  // liveCoins: Map<symbol, coin>
   for (const rule of gttRules) {
     if (rule.status !== 'ACTIVE') continue;
-    const coin = liveCoins.find((c) => c.symbol === rule.symbol);
+    const coin = liveCoins.get(rule.symbol);
     if (!coin) continue;
     const p = coin.price;
     let reason = null;
@@ -473,9 +481,10 @@ function runGtt(liveCoins) {
 
 /** Fill resting LIMIT orders when the live price reaches them (BUY at/below, SELL at/above). */
 function runOpenOrders(liveCoins) {
-  for (const order of orders) {
+  // Iterate a copy: mirroring unshifts replica orders into `orders` while we loop
+  for (const order of [...orders]) {
     if (order.status !== 'OPEN' || order.orderType !== 'LIMIT') continue;
-    const coin = liveCoins.find((c) => c.symbol === order.symbol);
+    const coin = liveCoins.get(order.symbol);
     const account = accounts.find((a) => a.id === order.accountId);
     if (!coin || !account) continue;
     const reached = order.side === 'BUY' ? coin.price <= order.price : coin.price >= order.price;
@@ -488,6 +497,37 @@ function runOpenOrders(liveCoins) {
       continue;
     }
     settleOrderFill(account, order, order.price, feePct);
+    // Only mirror manually placed orders, not bot or TP/SL exit fills.
+    if (order.source !== 'BOT' && order.source !== 'TP_SL' && shouldMirror(account, order)) mirrorFilledOrder(account, order, coin.price);
+  }
+}
+
+/** Auto-close positions whose take-profit or stop-loss has been reached (checked every cycle). */
+function runPositionExits(liveCoins) {
+  // Opt-out kill switch for operators who do not want existing positions auto-closed on rollout.
+  if (process.env.AUTO_POSITION_EXITS === 'false') return;
+  const accountById = new Map(accounts.map((a) => [a.id, a]));
+  for (const pos of [...positions]) {
+    if (!pos.tpPrice && !pos.slPrice) continue;
+    const coin = liveCoins.get(pos.symbol);
+    const account = accountById.get(pos.accountId);
+    if (!coin || !account) continue;
+    const p = coin.price;
+    const long = pos.side === 'LONG';
+    let reason = null;
+    if (pos.slPrice && (long ? p <= pos.slPrice : p >= pos.slPrice)) reason = 'STOP_LOSS'; // SL wins if both are crossed
+    else if (pos.tpPrice && (long ? p >= pos.tpPrice : p <= pos.tpPrice)) reason = 'TAKE_PROFIT';
+    if (!reason) continue;
+    const feePct = feePctFor(pos.broker);
+    const order = {
+      id: uid('ord-exit'), accountId: account.id, broker: pos.broker, symbol: pos.symbol,
+      side: long ? 'SELL' : 'BUY', orderType: 'MARKET', price: p, size: pos.size, filledSize: 0,
+      status: 'OPEN', timeInForce: 'IOC', leverage: pos.leverage, source: 'TP_SL', notes: `${reason} @ ${p}`,
+      timestamp: new Date().toISOString(), fee: 0,
+    };
+    const result = settleAndRecord(account, order, p, feePct);
+    if (!result.ok) continue;
+    console.log(`[TP/SL] ${reason} closed ${pos.symbol} ${pos.side} @ ${p} (PnL ${result.trade.realizedPnl})`);
   }
 }
 
@@ -499,18 +539,19 @@ export async function runBotsBackgroundCycle() {
   const running = botsState.bots.filter((b) => b.status === 'RUNNING');
   const hasGtt = gttRules.some((r) => r.status === 'ACTIVE');
   const hasOpenOrders = orders.some((o) => o.status === 'OPEN');
-  if (running.length === 0 && !hasGtt && !hasOpenOrders) return;
+  const hasExits = positions.some((p) => p.tpPrice || p.slPrice);
+  if (running.length === 0 && !hasGtt && !hasOpenOrders && !hasExits) return;
 
   let liveCoins;
   try {
-    liveCoins = await getLiveTop100MomentumCoins();
+    liveCoins = await getLivePriceIndex();
   } catch {
     return;
   }
 
   const now = Date.now();
   for (const bot of running) {
-    const coin = liveCoins.find((c) => c.symbol === bot.symbol);
+    const coin = liveCoins.get(bot.symbol);
     if (!coin) continue;
     try {
       if (bot.type === 'TWAP_SLICER') runTwap(bot, coin.price, now);
@@ -524,6 +565,7 @@ export async function runBotsBackgroundCycle() {
   }
   if (hasGtt) runGtt(liveCoins);
   if (hasOpenOrders) runOpenOrders(liveCoins);
+  if (hasExits) runPositionExits(liveCoins);
 }
 
 let timer = null;
