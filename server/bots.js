@@ -2,7 +2,7 @@
 // Advanced Volatility Grid, TWAP Micro-Slicer, and Momentum Breakout Radar
 // Synchronized with live Binance Public API v3 market data
 
-import { getLivePriceIndex, isFeedStale } from './binance.js';
+import { getLivePriceIndex, isFeedStale, subscribeSymbol } from './binance.js';
 import { feePct as feeFor, executionCost } from './costs.js';
 import { orders, trades, gttRules, accounts, positions } from './state.js';
 import { BROKERS } from './brokers/index.js';
@@ -833,6 +833,9 @@ async function runCycleInner() {
 
   const now = Date.now();
   for (const bot of running) {
+    // Subscribe to individual ticker stream for this bot's symbol (real-time price)
+    subscribeSymbol(bot.symbol);
+
     // Time-based exit: stop bot after the configured hours
     if (bot.timeExitAt && now >= bot.timeExitAt) {
       bot.status = 'STOPPED_OUT';

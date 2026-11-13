@@ -21,6 +21,190 @@ let lastFetchTime = 0;
 let inflight = null; // dedupes concurrent fetches
 export const feedStatus = { stale: false, lastError: null, lastSuccess: 0 };
 
+// ============================================================================
+// Binance WebSocket Real-Time Price Feed
+// Replaces REST polling with live WebSocket ticker updates for sub-second pricing.
+// ============================================================================
+
+const WS_HOSTS = [
+  'wss://stream.binance.com:9443',
+  'wss://stream.binance.com:9443/ws',
+];
+
+let ws = null;
+let wsReconnectTimer = null;
+let wsConnecting = false;
+let wsSubscriptions = new Set(); // individual symbol subscriptions
+let wsIndex = new Map(); // symbol -> live coin (WebSocket-updated)
+let wsLastUpdate = 0; // timestamp of last WebSocket message
+let wsReconnectDelay = 1000;
+
+/** Build a live-coin object from a Binance 24hr ticker payload. */
+function coinFromTicker(t) {
+  const symbol = String(t.s || t.symbol || '').toUpperCase();
+  const price = Number(t.c ?? t.lastPrice ?? 0);
+  return {
+    symbol,
+    base: symbol.replace('USDT', ''),
+    quote: 'USDT',
+    name: symbol.replace('USDT', ''),
+    price,
+    change24h: Number((t.P ?? t.priceChangePercent ?? 0)),
+    high24h: Number(t.h ?? t.highPrice ?? price),
+    low24h: Number(t.l ?? t.lowPrice ?? price),
+    volume: Number(t.v ?? t.volume ?? 0),
+    quoteVolume: Number(t.q ?? t.quoteVolume ?? 0),
+    tradesCount: Number(t.n ?? t.count ?? 0),
+    bidPrice: Number(t.b ?? t.bidPrice ?? price),
+    askPrice: Number(t.a ?? t.askPrice ?? price),
+    weightedAvgPrice: Number(t.w ?? t.weightedAvgPrice ?? price),
+    lastUpdate: t.E ?? t.eventTime ?? Date.now(),
+    precision: getPrecision(price),
+    tickSize: price >= 1000 ? 0.1 : price >= 10 ? 0.01 : 0.0001,
+  };
+}
+
+/** Merge a single ticker into the WebSocket index. */
+function mergeTicker(t) {
+  const coin = coinFromTicker(t);
+  const symbol = coin.symbol;
+  const prev = wsIndex.get(symbol);
+  wsIndex.set(symbol, prev ? { ...prev, ...coin, lastUpdate: Date.now() } : coin);
+  wsLastUpdate = Date.now();
+  feedStatus.stale = false;
+  feedStatus.lastSuccess = wsLastUpdate;
+}
+
+/** Process an incoming WebSocket message. */
+function onWsMessage(data) {
+  try {
+    const msg = JSON.parse(data);
+    if (Array.isArray(msg)) {
+      // Combined !ticker@arr stream: array of tickers
+      for (const t of msg) mergeTicker(t);
+    } else if (msg && msg.s) {
+      // Individual symbol ticker stream
+      mergeTicker(msg);
+    } else if (msg && msg.result === null && msg.id) {
+      // Subscription confirmation
+      if (msg.params && msg.params.symbol) wsSubscriptions.add(msg.params.symbol.toUpperCase());
+    }
+  } catch (err) {
+    console.error('[WS] message parse error:', err.message);
+  }
+}
+
+/** Open the Binance WebSocket connection. */
+function connectWebSocket() {
+  if (wsConnecting || (ws && ws.readyState === WebSocket.OPEN)) return;
+  wsConnecting = true;
+  try {
+    const url = `${WS_HOSTS[0]}/ws/!ticker@arr`;
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => {
+      wsConnecting = false;
+      wsReconnectDelay = 1000;
+      console.log('[WS] Binance WebSocket connected (combined ticker)');
+      // Subscribe to individual streams for symbols with active bots
+      resubscribeActiveSymbols();
+    };
+    ws.onmessage = (ev) => {
+      const data = typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf-8');
+      onWsMessage(data);
+    };
+    ws.onerror = (err) => {
+      console.error('[WS] Binance WebSocket error:', err.message);
+    };
+    ws.onclose = () => {
+      wsConnecting = false;
+      ws = null;
+      feedStatus.stale = true;
+      console.log('[WS] Binance WebSocket closed, reconnecting...');
+      scheduleReconnect();
+    };
+  } catch (err) {
+    wsConnecting = false;
+    console.error('[WS] Failed to connect:', err.message);
+    scheduleReconnect();
+  }
+}
+
+/** Schedule a WebSocket reconnection with exponential backoff. */
+function scheduleReconnect() {
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+  wsReconnectTimer = setTimeout(() => {
+    connectWebSocket();
+    wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
+  }, wsReconnectDelay);
+}
+
+/** Subscribe to individual ticker streams for symbols that have active bots. */
+export function subscribeSymbol(symbol) {
+  const s = String(symbol).toUpperCase();
+  if (!s.endsWith('USDT')) return;
+  wsSubscriptions.add(s);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [`${s.toLowerCase()}@ticker`], id: Date.now() }));
+  }
+}
+
+/** Unsubscribe from an individual ticker stream. */
+export function unsubscribeSymbol(symbol) {
+  const s = String(symbol).toUpperCase();
+  wsSubscriptions.delete(s);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: [`${s.toLowerCase()}@ticker`], id: Date.now() }));
+  }
+}
+
+/** Re-subscribe to all active bot symbols after reconnect. */
+export function resubscribeActiveSymbols() {
+  for (const s of wsSubscriptions) {
+    ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [`${s.toLowerCase()}@ticker`], id: Date.now() }));
+  }
+}
+
+/** Start the WebSocket feed (call once at server boot). */
+export function startPriceFeed() {
+  connectWebSocket();
+  // Heartbeat: if no WS message for 15s, mark stale and force reconnect
+  setInterval(() => {
+    if (wsLastUpdate > 0 && Date.now() - wsLastUpdate > 15000) {
+      feedStatus.stale = true;
+      console.warn('[WS] No ticker update for 15s, marking feed stale');
+      if (ws) { ws.close(); ws = null; scheduleReconnect(); }
+    }
+  }, 5000);
+}
+
+/** Get live price index from WebSocket (primary) with REST fallback. */
+export async function getLivePriceIndex() {
+  // Prefer WebSocket index if it has data and is fresh
+  if (wsIndex.size > 0 && Date.now() - wsLastUpdate < 10000) {
+    return wsIndex;
+  }
+  // Fallback: REST poll (existing behavior)
+  await getLiveTop100MomentumCoins();
+  return cachedIndex;
+}
+
+/** Is the WebSocket feed stale (no recent updates)? */
+export function isFeedStale() {
+  // No WS data yet: fall back to REST-based staleness
+  if (wsIndex.size === 0) return feedStatus.stale && Date.now() - feedStatus.lastSuccess > 15000;
+  return Date.now() - wsLastUpdate > 10000;
+}
+
+/** Get a single live coin from the WebSocket index. */
+export async function getLiveCoin(symbol) {
+  const s = String(symbol).toUpperCase();
+  // Prefer WebSocket
+  if (wsIndex.has(s)) return wsIndex.get(s);
+  // Fallback to REST
+  return (await getLivePriceIndex()).get(s);
+}
+
 // Binance global API endpoints; Render IPs are sometimes blocked on api.binance.com (HTTP 451).
 // Fall back through the mirror hostnames so live data keeps working.
 const BINANCE_HOSTS = [
@@ -85,17 +269,6 @@ export async function getLiveTop100MomentumCoins() {
 /** Snapshot of the cached top-100 list (empty until the first successful fetch). */
 export function getCachedTop100() {
   return cachedTop100;
-}
-
-/** Symbol -> live coin for every liquid USDT pair. Refreshes the cache if stale. */
-export async function getLivePriceIndex() {
-  await getLiveTop100MomentumCoins();
-  return cachedIndex;
-}
-
-/** Live coin for any tracked USDT symbol, or undefined. */
-export async function getLiveCoin(symbol) {
-  return (await getLivePriceIndex()).get(String(symbol).toUpperCase());
 }
 
 /** Merge a websocket ticker update into the caches. */
@@ -205,11 +378,6 @@ async function fetchTop100(now) {
     }
     return cachedTop100; // empty list rather than undefined so callers never crash
   }
-}
-
-/** True when the last successful price fetch is older than maxAgeMs (feed down). */
-export function isFeedStale(maxAgeMs = 15000) {
-  return feedStatus.stale && Date.now() - feedStatus.lastSuccess > maxAgeMs;
 }
 
 /**

@@ -36,6 +36,9 @@ import {
   getLivePriceIndex,
   getCachedTop100,
   applyTickerUpdate,
+  startPriceFeed,
+  subscribeSymbol,
+  unsubscribeSymbol,
   getLiveOrderBookDepth,
   getLiveRecentTrades,
   getLiveKlines,
@@ -1488,6 +1491,7 @@ async function startServer() {
     console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${process.env.STATE_FILE}`);
   }
   startBotLoop();
+  startPriceFeed();
   setInterval(releaseFinishedBotSymbols, 5000).unref();
   // Containers (Render/Docker) must listen on all interfaces; local dev stays on loopback
   const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
