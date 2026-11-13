@@ -228,7 +228,7 @@ function settleAndRecord(account, order, price, feePct) {
  * Execute a simulated fill through the same accounting as manual orders
  * (margin / balances, positions, fees, trade book). Returns { ok, order, trade } or { ok:false, reason }.
  */
-function executeFill({ bot, side, price, size, orderType = 'LIMIT', timeInForce = 'GTC', leverage = 1, tpPrice, slPrice, tag }) {
+export function executeFill({ bot, side, price, size, orderType = 'LIMIT', timeInForce = 'GTC', leverage = 1, tpPrice, slPrice, tag }) {
   const account = accounts.find((a) => a.id === bot.accountId);
   if (!account) return { ok: false, reason: 'Account no longer exists' };
   const feePct = feePctFor(bot.broker);
@@ -329,16 +329,37 @@ function runGrid(bot, livePrice) {
       bot.totalBaseHoldings = Number(((bot.totalBaseHoldings || 0) + rung.orderSize).toFixed(8));
       rung.side = 'SELL';
       [rung.price, rung.targetPrice] = [rung.targetPrice, rung.price];
+      if (bot.trailingTpSlPercent) {
+        const precision = Number(bot.precision ?? 2);
+        const pct = bot.trailingTpSlPercent / 100;
+        rung.entryPrice = fillPrice;
+        rung.peakPrice = fillPrice;
+        rung.tpPrice = Number((fillPrice * (1 + pct)).toFixed(precision));
+        rung.slPrice = Number((fillPrice * (1 - pct)).toFixed(precision));
+      }
       log(bot, `[Grid Buy Filled] Bought ${rung.orderSize} ${bot.symbol} @ $${fillPrice.toLocaleString()}. Sell limit placed @ $${rung.price.toLocaleString()}.`);
-    } else if (rung.side === 'SELL' && livePrice >= rung.price) {
+    } else if (rung.side === 'SELL') {
+      const precision = Number(bot.precision ?? 2);
+      // Trailing stop: trail the peak and move the stop up as price rises
+      if (bot.trailingTpSlPercent && rung.entryPrice) {
+        if (livePrice > (rung.peakPrice || 0)) {
+          rung.peakPrice = livePrice;
+          rung.slPrice = Number((rung.peakPrice * (1 - bot.trailingTpSlPercent / 100)).toFixed(precision));
+        }
+      }
+      const tpHit = rung.tpPrice && livePrice >= rung.tpPrice;
+      const slHit = rung.slPrice && livePrice <= rung.slPrice;
+      const gridHit = livePrice >= rung.price;
+      if (!tpHit && !slHit && !gridHit) continue;
+
       // Only sell what the bot bought AND what the account still holds (user may have sold/closed it)
       if ((bot.totalBaseHoldings || 0) + 1e-12 < rung.orderSize) continue;
       if (baseInventory(account, bot.symbol) + 1e-12 < rung.orderSize) {
         logRejection(bot, `s${rung.index}`, 'account no longer holds the grid inventory');
         continue;
       }
-      const fillPrice = rung.price;
-      const boughtAt = rung.targetPrice;
+      const fillPrice = (tpHit || slHit) ? livePrice : rung.price;
+      const boughtAt = rung.entryPrice ?? rung.targetPrice;
       const res = executeFill({ bot, side: 'SELL', price: fillPrice, size: rung.orderSize, tag: 'grid-s' });
       if (!res.ok) { logRejection(bot, `s${rung.index}`, res.reason); continue; }
       rung.fillsCount += 1;
@@ -352,6 +373,10 @@ function runGrid(bot, livePrice) {
       bot.volumeUSDT = Number(((bot.volumeUSDT || 0) + fillPrice * rung.orderSize).toFixed(2));
       rung.side = 'BUY';
       [rung.price, rung.targetPrice] = [rung.targetPrice, rung.price];
+      delete rung.entryPrice;
+      delete rung.peakPrice;
+      delete rung.tpPrice;
+      delete rung.slPrice;
       log(bot, `[Grid Spread Harvested] Sold @ $${fillPrice.toLocaleString()}. Net ${netProfit >= 0 ? '+' : ''}$${netProfit} USDT. Buy limit placed @ $${rung.price.toLocaleString()}.`);
     }
   }

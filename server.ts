@@ -45,6 +45,7 @@ import {
   f_decimalPlaces,
   f_naturalNumber,
   calculateOptimalGridParams,
+  executeFill,
 } from './server/bots.js';
 import {
   simulateGridBot,
@@ -945,6 +946,33 @@ app.post('/api/bots', async (req, res) => {
         return res.status(400).json({ error: `Cannot fund grid starting inventory: ${seed.reason}` });
       }
       const seeded = seed.qty;
+
+      // Immediately fill buy rungs the market has already traded through at deployment.
+      // These flip to sell limits so the existing sell-on-hit logic captures the upside.
+      for (const rung of generatedRungs) {
+        if (rung.side === 'BUY' && livePrice >= rung.price) {
+          const buyPrice = rung.price;
+          const sellTarget = rung.targetPrice;
+          const initRes = executeFill({ bot: newBot, side: 'BUY', price: rung.price, size: rung.orderSize, tag: 'grid-init' });
+          if (initRes.ok) {
+            rung.fillsCount += 1;
+            newBot.completedRounds += 1;
+            newBot.totalBaseHoldings = Number(((newBot.totalBaseHoldings || 0) + rung.orderSize).toFixed(8));
+            rung.side = 'SELL';
+            [rung.price, rung.targetPrice] = [rung.targetPrice, rung.price];
+            newBot.logs.unshift({
+              time: new Date().toLocaleTimeString(),
+              text: `[Grid Init] Pre-filled buy ${rung.orderSize} ${symbol} @ $${buyPrice.toLocaleString()}. Sell limit @ $${sellTarget.toLocaleString()}.`,
+            });
+          } else {
+            newBot.logs.unshift({
+              time: new Date().toLocaleTimeString(),
+              text: `[Grid Init] Skipped buy rung @ $${buyPrice.toLocaleString()}: ${initRes.reason}`,
+            });
+          }
+        }
+      }
+
       const buyRungsCount = generatedRungs.filter((r) => r.side === 'BUY').length;
       const sellRungsCount = generatedRungs.filter((r) => r.side === 'SELL').length;
       newBot.logs.unshift({
