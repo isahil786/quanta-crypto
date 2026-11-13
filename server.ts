@@ -898,8 +898,8 @@ app.post('/api/bots', async (req, res) => {
     if (!account) {
       return res.status(404).json({ error: 'Target account not found' });
     }
-    // HALAL_ONLY is always enforced — only halal-screened coins can be traded
-    if (!isHalalSymbol(String(symbol || ''))) {
+    // HALAL_ONLY is enforced only when the user opts in via the halal toggle
+    if (halalOnly === true && !isHalalSymbol(String(symbol || ''))) {
       return res.status(400).json({ error: `${symbol} is not on the halal coin list` });
     }
     if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT', 'QSL', 'DCA_ACCUMULATOR'].includes(type)) {
