@@ -23,6 +23,69 @@ import {
   ChevronUp,
 } from 'lucide-react';
 
+// Price formatting that stays readable from BTC (100,123.45) down to sub-cent coins (0.00001234)
+const fmtPrice = (p) => {
+  const n = Number(p);
+  if (p === null || p === undefined || p === '' || !Number.isFinite(n)) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (abs >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return Number(n.toPrecision(4)).toString();
+};
+// -$1.20 / +$3.40 (sign before the currency symbol)
+const fmtSigned = (v, digits = 2) => {
+  const n = Number(v) || 0;
+  return `${n < 0 ? '-' : '+'}$${Math.abs(n).toFixed(digits)}`;
+};
+
+const STATUS_STYLES = {
+  RUNNING: { label: 'Running', dot: 'bg-emerald-400', cls: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30', pulse: true },
+  PAUSED: { label: 'Paused', dot: 'bg-amber-400', cls: 'text-amber-300 bg-amber-500/10 border-amber-500/30' },
+  COMPLETED: { label: 'Completed', dot: 'bg-cyan-400', cls: 'text-cyan-300 bg-cyan-500/10 border-cyan-500/30' },
+  STOPPED_OUT: { label: 'Stopped out', dot: 'bg-rose-400', cls: 'text-rose-300 bg-rose-500/10 border-rose-500/30' },
+  ERROR: { label: 'Error', dot: 'bg-rose-400', cls: 'text-rose-300 bg-rose-500/10 border-rose-500/30' },
+  CANCELLED: { label: 'Stopped', dot: 'bg-slate-500', cls: 'text-slate-400 bg-slate-500/10 border-slate-600/40' },
+};
+function StatusPill({ bot }) {
+  const st = STATUS_STYLES[bot.status] || { label: bot.status, dot: 'bg-slate-500', cls: 'text-slate-400 bg-slate-500/10 border-slate-600/40' };
+  const reason = bot.status === 'STOPPED_OUT' ? (bot.stopReason === 'TAKE_PROFIT' ? ' · TP' : ' · SL') : '';
+  return (
+    <span className={`inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-mono font-bold uppercase tracking-wide ${st.cls}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${st.dot} ${st.pulse ? 'animate-pulse' : ''}`} />
+      {st.label}{reason}
+    </span>
+  );
+}
+// Small risk-guard chips (inventory cap / stop-loss / take-profit) shown on grid and QSL cards
+function GuardChips({ bot }) {
+  const chips = [];
+  if (bot.maxInventory) chips.push(['Max inv', bot.maxInventory, 'text-slate-300']);
+  if (bot.stopLossPrice) chips.push(['SL', `$${fmtPrice(bot.stopLossPrice)}`, 'text-rose-300']);
+  if (bot.takeProfitPrice) chips.push(['TP', `$${fmtPrice(bot.takeProfitPrice)}`, 'text-emerald-300']);
+  if (!chips.length) return null;
+  return (
+    <div className="relative z-10 flex flex-wrap gap-1.5 font-mono text-[10px]">
+      {chips.map(([k, v, c]) => (
+        <span key={k} className="inline-flex items-center gap-1 rounded border border-slate-700/70 bg-slate-950/60 px-1.5 py-0.5 text-slate-500">
+          {k}<strong className={c}>{v}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+// Range / live price / buy-sell split footer shared by grid and QSL cards
+function RangeFooter({ range, live, buys, sells, accent, tone }) {
+  return (
+    <div className={`relative z-10 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 pt-2 border-t ${tone} text-[11px] font-mono text-slate-400`}>
+      <span className="truncate">Range <span className="text-slate-200">{range}</span></span>
+      <span className="text-right">
+        <strong className={accent}>{buys}B</strong> / <strong className="text-rose-400">{sells}S</strong>
+      </span>
+      <span className="col-span-2">Live <span className="text-slate-200">${live}</span></span>
+    </div>
+  );
+}
+
 export default function AlgoBots({ accounts, tickers }) {
   const [botsData, setBotsData] = useState({ bots: [], stats: {} });
   const [filterType, setFilterType] = useState('ALL'); // 'ALL', 'TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT'
@@ -68,6 +131,11 @@ export default function AlgoBots({ accounts, tickers }) {
   const [qslLevelsEachSide, setQslLevelsEachSide] = useState('5');
   const [qslTriggerLevel, setQslTriggerLevel] = useState('2');
   const [qslSize, setQslSize] = useState('0.05');
+
+  // Risk guards (grid + QSL): inventory cap and range-exit stops
+  const [maxInventory, setMaxInventory] = useState('');
+  const [stopLossPrice, setStopLossPrice] = useState('');
+  const [takeProfitPrice, setTakeProfitPrice] = useState('');
 
   const fetchBots = async () => {
     try {
@@ -129,7 +197,6 @@ export default function AlgoBots({ accounts, tickers }) {
       setGridSize(pair.price > 1000 ? '0.01' : pair.price > 50 ? '0.2' : '10');
       setOptimizationResult(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, hasSelectedPair]);
 
   // Auto-optimize grid parameters based on live Binance market data
@@ -223,6 +290,11 @@ export default function AlgoBots({ accounts, tickers }) {
         triggerLevel: qslTriggerLevel,
         sizePerGrid: botType === 'QSL' ? Number(qslSize) : Number(gridSize),
       };
+      if (botType === 'GRID_BOT' || botType === 'QSL') {
+        if (maxInventory !== '') payload.maxInventory = Number(maxInventory);
+        if (stopLossPrice !== '') payload.stopLossPrice = Number(stopLossPrice);
+        if (takeProfitPrice !== '') payload.takeProfitPrice = Number(takeProfitPrice);
+      }
 
       const res = await fetch('/api/bots', {
         method: 'POST',
@@ -447,18 +519,18 @@ export default function AlgoBots({ accounts, tickers }) {
           return (
             <div
               key={bot.id}
-              className={`bg-slate-900/80 border rounded-xl p-5 flex flex-col justify-between transition-all ${
+              className={`bg-slate-900/80 border rounded-xl p-5 flex flex-col transition-all ${
                 isRunning ? 'border-slate-700/80 shadow-md' : 'border-slate-800/60 opacity-80'
               }`}
             >
-              <div>
+              <div className="flex flex-col flex-1">
                 {/* Header */}
-                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-white">{bot.name}</span>
+                <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs font-bold text-white truncate" title={bot.name}>{bot.name}</span>
                   </div>
                   <span
-                    className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold ${
+                    className={`shrink-0 whitespace-nowrap text-[10px] font-mono uppercase px-2 py-0.5 rounded font-bold ${
                       bot.type === 'TWAP_SLICER'
                         ? 'text-cyan-400 bg-cyan-500/10 border border-cyan-500/20'
                         : bot.type === 'BREAKOUT_CHASER'
@@ -470,15 +542,14 @@ export default function AlgoBots({ accounts, tickers }) {
                   </span>
                 </div>
 
-                {/* Sub-header info */}
-                <div className="flex items-center justify-between text-[11px] text-slate-400 mt-3 font-mono">
-                  <span>Pair: <strong className="text-white">{bot.symbol}</strong></span>
-                  <span className="capitalize">Route: {bot.broker}</span>
-                  <span className={`font-bold ${
-                    isRunning ? 'text-emerald-400' : isCompleted ? 'text-cyan-400' : 'text-slate-500'
-                  }`}>
-                    {bot.status}
-                  </span>
+                {/* Sub-header info: pair + route on the left, status pill on the right */}
+                <div className="flex items-center justify-between gap-3 text-[11px] mt-3 font-mono">
+                  <div className="flex items-center gap-1.5 min-w-0 text-slate-400">
+                    <strong className="text-white truncate">{bot.symbol}</strong>
+                    <span className="text-slate-600">·</span>
+                    <span className="capitalize truncate">{bot.broker}</span>
+                  </div>
+                  <StatusPill bot={bot} />
                 </div>
 
                 {/* Specific Progress / Metrics per Bot Type */}
@@ -489,7 +560,7 @@ export default function AlgoBots({ accounts, tickers }) {
                     <div className="absolute -bottom-8 -left-8 w-24 h-24 bg-teal-400/15 rounded-full blur-xl pointer-events-none" />
 
                     {/* Header inside Earning Light Patch */}
-                    <div className="relative z-10 flex items-center justify-between pb-2 border-b border-emerald-500/20">
+                    <div className="relative z-10 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pb-2 border-b border-emerald-500/20">
                       <div className="flex items-center gap-1.5">
                         <span className="relative flex h-2 w-2">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -509,7 +580,7 @@ export default function AlgoBots({ accounts, tickers }) {
                       <div>
                         <div className="text-[10px] text-slate-400 font-mono">Net Realized Profit</div>
                         <div className="text-2xl font-black font-mono tracking-tight bg-gradient-to-r from-emerald-200 via-emerald-400 to-teal-300 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(16,185,129,0.35)] tabular-nums">
-                           {(bot.realizedProfitUSDT || 0) >= 0 ? '+' : ''}${(bot.realizedProfitUSDT || 0).toFixed(2)}{' '}
+                           {fmtSigned(bot.realizedProfitUSDT)}{' '}
 
                           <span className="text-xs text-emerald-400 font-bold">USDT</span>
                         </div>
@@ -524,18 +595,24 @@ export default function AlgoBots({ accounts, tickers }) {
                               : 'bg-rose-400/15 text-rose-300 border-rose-400/30'
                           }`}
                         >
-                          {(bot.unrealizedPnlUSDT || 0) >= 0 ? '+' : ''}${bot.unrealizedPnlUSDT?.toFixed(2) || '0.00'}
+                          {fmtSigned(bot.unrealizedPnlUSDT)}
                         </div>
                       </div>
                     </div>
 
                     {/* Secondary Metric Light Patches */}
                     <div className="relative z-10 grid grid-cols-3 gap-2 pt-1 font-mono">
-                      {/* Light Patch 1: Est. APR */}
+                      {/* Light Patch 1: spacing per level (net of fees this is the profit per round trip) */}
                       <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/25 shadow-[0_0_12px_rgba(16,185,129,0.08)] flex flex-col justify-between">
-                        <span className="text-[9px] uppercase tracking-wider text-emerald-300/80">Est. Grid APR</span>
+                        <span className="text-[9px] uppercase tracking-wider text-emerald-300/80">Step / Level</span>
                         <span className="text-xs font-bold text-emerald-300 mt-0.5">
-                          ~{((((bot.upperPrice - bot.lowerPrice) / (bot.lowerPrice || 1)) * 100 * 2.5) + 18.5).toFixed(1)}%
+                          {(() => {
+                            const n = Number(bot.gridCount) || 1;
+                            const pct = bot.gridMode === 'GEOMETRIC'
+                              ? (Math.pow(bot.upperPrice / bot.lowerPrice, 1 / n) - 1) * 100
+                              : ((bot.upperPrice - bot.lowerPrice) / n / (bot.upperPrice || 1)) * 100;
+                            return Number.isFinite(pct) ? `${pct.toFixed(2)}%` : '—';
+                          })()}
                         </span>
                       </div>
 
@@ -556,57 +633,64 @@ export default function AlgoBots({ accounts, tickers }) {
                       </div>
                     </div>
 
-                    {/* Range Summary */}
-                    <div className="relative z-10 flex items-center justify-between text-[11px] pt-2 border-t border-emerald-500/20 text-slate-400 font-mono">
-                      <span>Range: ${bot.lowerPrice?.toLocaleString()} - ${bot.upperPrice?.toLocaleString()}</span>
-                      <span className="text-slate-300">
-                        Live: ${bot.currentPrice?.toLocaleString() || bot.initialPrice?.toLocaleString()}
-                      </span>
-                      <span className="text-slate-300">
-                        <strong className="text-emerald-400">{buyRungs.length}B</strong> /{' '}
-                        <strong className="text-rose-400">{sellRungs.length}S</strong>
-                      </span>
-                    </div>
+                    <GuardChips bot={bot} />
+                    <RangeFooter
+                      range={`$${fmtPrice(bot.lowerPrice)} – $${fmtPrice(bot.upperPrice)}`}
+                      live={fmtPrice(bot.currentPrice ?? bot.initialPrice)}
+                      buys={buyRungs.length}
+                      sells={sellRungs.length}
+                      accent="text-emerald-400"
+                      tone="border-emerald-500/20"
+                    />
                   </div>
                 )}
 
                 {bot.type === 'TWAP_SLICER' && (
-                  <div className="mt-3 bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2">
-                    <div className="flex justify-between text-xs text-slate-400">
-                      <span>Execution Slices:</span>
-                      <span className="font-mono text-emerald-400 font-bold">
-                        {bot.completedSlices} / {bot.slicesCount} filled
+                  <div className="mt-3 bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">Execution slices</span>
+                      <span className="font-mono text-sm text-emerald-400 font-bold tabular-nums">
+                        {bot.completedSlices} / {bot.slicesCount} <span className="text-[10px] text-slate-500 font-normal">filled</span>
                       </span>
                     </div>
-
-                    {/* Progress Bar */}
                     <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
                       <div
                         className="bg-emerald-500 h-full rounded-full transition-all duration-500"
                         style={{ width: `${Math.min((bot.completedSlices / bot.slicesCount) * 100, 100)}%` }}
                       />
                     </div>
-
-                    <div className="flex justify-between text-[11px] text-slate-400 font-mono">
-                      <span>Filled: {bot.executedSize} / {bot.totalSize}</span>
-                      <span>Cadence: Every {bot.intervalSeconds}s</span>
+                    <div className="grid grid-cols-2 gap-2 font-mono">
+                      <div className="rounded-lg bg-slate-900/80 border border-slate-800 p-2">
+                        <div className="text-[9px] uppercase tracking-wider text-slate-500">Filled size</div>
+                        <div className="text-xs font-bold text-slate-200 mt-0.5 tabular-nums">{bot.executedSize} / {bot.totalSize}</div>
+                      </div>
+                      <div className="rounded-lg bg-slate-900/80 border border-slate-800 p-2">
+                        <div className="text-[9px] uppercase tracking-wider text-slate-500">Cadence</div>
+                        <div className="text-xs font-bold text-slate-200 mt-0.5">Every {bot.intervalSeconds}s</div>
+                      </div>
                     </div>
                   </div>
                 )}
 
                 {bot.type === 'BREAKOUT_CHASER' && (
-                  <div className="mt-3 bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1.5 text-xs">
-                    <div className="flex justify-between text-slate-400">
-                      <span>Breakout Trigger Price:</span>
-                      <span className="font-mono text-amber-400 font-bold">${bot.triggerPrice?.toLocaleString()}</span>
+                  <div className="mt-3 bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">Trigger price</span>
+                      <span className="font-mono text-sm text-amber-400 font-bold tabular-nums">${fmtPrice(bot.triggerPrice)}</span>
                     </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Order Size / Lev:</span>
-                      <span className="font-mono text-slate-200">{bot.size} ({bot.leverage}x)</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400 text-[11px]">
-                      <span>Target Profit: <strong className="text-emerald-400">${bot.tpPrice || '—'}</strong></span>
-                      <span>Stop Loss: <strong className="text-rose-400">${bot.slPrice || '—'}</strong></span>
+                    <div className="grid grid-cols-3 gap-2 font-mono">
+                      <div className="rounded-lg bg-slate-900/80 border border-slate-800 p-2">
+                        <div className="text-[9px] uppercase tracking-wider text-slate-500">Size / Lev</div>
+                        <div className="text-xs font-bold text-slate-200 mt-0.5">{bot.size} · {bot.leverage}x</div>
+                      </div>
+                      <div className="rounded-lg bg-emerald-500/5 border border-emerald-500/20 p-2">
+                        <div className="text-[9px] uppercase tracking-wider text-emerald-300/70">Take profit</div>
+                        <div className="text-xs font-bold text-emerald-300 mt-0.5">{bot.tpPrice ? `$${fmtPrice(bot.tpPrice)}` : '—'}</div>
+                      </div>
+                      <div className="rounded-lg bg-rose-500/5 border border-rose-500/20 p-2">
+                        <div className="text-[9px] uppercase tracking-wider text-rose-300/70">Stop loss</div>
+                        <div className="text-xs font-bold text-rose-300 mt-0.5">{bot.slPrice ? `$${fmtPrice(bot.slPrice)}` : '—'}</div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -615,7 +699,7 @@ export default function AlgoBots({ accounts, tickers }) {
                 {bot.type === 'QSL' && (
                   <div className="mt-3 relative overflow-hidden rounded-xl border border-purple-500/35 bg-gradient-to-br from-purple-950/40 via-slate-950/85 to-purple-950/20 p-3.5 shadow-[0_0_25px_rgba(168,85,247,0.12)] space-y-3">
                     {/* Header inside */}
-                    <div className="relative z-10 flex items-center justify-between pb-2 border-b border-purple-500/20">
+                    <div className="relative z-10 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pb-2 border-b border-purple-500/20">
                       <div className="flex items-center gap-1.5">
                         <span className="relative flex h-2 w-2">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
@@ -635,7 +719,7 @@ export default function AlgoBots({ accounts, tickers }) {
                       <div>
                         <div className="text-[10px] text-slate-400 font-mono">Net Realized Profit</div>
                         <div className="text-2xl font-black font-mono tracking-tight bg-gradient-to-r from-purple-200 via-purple-400 to-fuchsia-300 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(168,85,247,0.35)] tabular-nums">
-                          {(bot.realizedProfitUSDT || 0) >= 0 ? '+' : ''}${(bot.realizedProfitUSDT || 0).toFixed(2)}{' '}
+                          {fmtSigned(bot.realizedProfitUSDT)}{' '}
                           <span className="text-xs text-purple-400 font-bold">USDT</span>
                         </div>
                       </div>
@@ -648,7 +732,7 @@ export default function AlgoBots({ accounts, tickers }) {
                               : 'bg-rose-400/15 text-rose-300 border-rose-400/30'
                           }`}
                         >
-                          {(bot.unrealizedPnlUSDT || 0) >= 0 ? '+' : ''}${bot.unrealizedPnlUSDT?.toFixed(2) || '0.00'}
+                          {fmtSigned(bot.unrealizedPnlUSDT)}
                         </div>
                       </div>
                     </div>
@@ -669,25 +753,25 @@ export default function AlgoBots({ accounts, tickers }) {
                       </div>
                     </div>
 
-                    {/* Range Summary */}
-                    <div className="relative z-10 flex items-center justify-between text-[11px] pt-2 border-t border-purple-500/20 text-slate-400 font-mono">
-                      <span>Range: ${bot.levels?.[0]?.price?.toLocaleString()} - ${bot.levels?.[bot.levels.length - 1]?.price?.toLocaleString()}</span>
-                      <span className="text-slate-300">
-                        Live: {bot.currentPrice?.toLocaleString() ?? bot.initialPrice?.toLocaleString()}
-                      </span>
-                      <span className="text-slate-300">
-                        <strong className="text-purple-400">{buyRungs.length}B</strong> /{' '}
-                        <strong className="text-rose-400">{sellRungs.length}S</strong>
-                      </span>
-                    </div>
+                    <GuardChips bot={bot} />
+                    <RangeFooter
+                      range={`$${fmtPrice(bot.levels?.[0]?.price)} – $${fmtPrice(bot.levels?.[bot.levels.length - 1]?.price)}`}
+                      live={fmtPrice(bot.currentPrice ?? bot.initialPrice)}
+                      buys={buyRungs.length}
+                      sells={sellRungs.length}
+                      accent="text-purple-400"
+                      tone="border-purple-500/20"
+                    />
                   </div>
                 )}
 
                 {/* Recent Log Teaser */}
-                <div className="mt-3 pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
-                  <span className="text-slate-500 font-medium">Latest Activity:</span>
-                  <div className="text-slate-300 font-mono mt-0.5 truncate">
-                    {bot.logs && bot.logs[0] ? `[${bot.logs[0].time}] ${bot.logs[0].text}` : 'Running cycle...'}
+                <div className="mt-auto pt-3">
+                  <div className="pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
+                    <span className="text-slate-500 font-medium">Latest activity</span>
+                    <div className="text-slate-300 font-mono mt-0.5 truncate" title={bot.logs?.[0]?.text}>
+                      {bot.logs && bot.logs[0] ? `[${bot.logs[0].time}] ${bot.logs[0].text}` : bot.status === 'RUNNING' ? 'Running cycle…' : 'No activity'}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -760,7 +844,7 @@ export default function AlgoBots({ accounts, tickers }) {
                       <span>Ladder Harvest:</span>
                     </span>
                     <span className="text-emerald-300 font-bold font-mono">
-                       {(bot.realizedProfitUSDT || 0) >= 0 ? '+' : ''}${(bot.realizedProfitUSDT || 0)?.toFixed(2) || '0.00'} USDT ({bot.completedRounds || 0} sweeps)
+                       {fmtSigned(bot.realizedProfitUSDT)} USDT ({bot.completedRounds || 0} sweeps)
 
                     </span>
                   </div>
@@ -921,18 +1005,7 @@ export default function AlgoBots({ accounts, tickers }) {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] text-slate-400 font-medium">Crypto Market Pair</label>
-                    <label className="flex items-center gap-1 text-[10px] text-emerald-400 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={halalOnly}
-                        onChange={(e) => setHalalOnly(e.target.checked)}
-                        className="accent-emerald-500"
-                      />
-                      Halal only
-                    </label>
-                  </div>
+                  <label className="text-[11px] text-slate-400 font-medium">Crypto Market Pair</label>
                   <select
                     value={symbol}
                     onChange={(e) => setSymbol(e.target.value)}
@@ -943,15 +1016,48 @@ export default function AlgoBots({ accounts, tickers }) {
                     )}
                     {pairPool.map((t, i) => (
                       <option key={t.symbol} value={t.symbol}>
-                        #{halalOnly ? t.halalRank : t.momentumRank ?? i + 1} {t.symbol} (${t.price < 0.01 ? t.price.toFixed(6) : t.price.toLocaleString()})
+                        #{halalOnly ? t.halalRank : t.momentumRank ?? i + 1} {t.symbol} (${fmtPrice(t.price)})
                       </option>
                     ))}
                   </select>
-                  {halalOnly && (
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      {halalData.tradable.length} of {halalData.listed} listed halal coins have a live USDT pair. Third-party screen; verify before trading.
+                </div>
+              </div>
+
+              {/* Halal screen: a full-width switch card instead of a tiny checkbox squeezed beside the label */}
+              <div
+                className={`rounded-lg border px-3 py-2.5 transition-colors ${
+                  halalOnly ? 'border-emerald-500/40 bg-emerald-500/[0.06]' : 'border-slate-800 bg-slate-950'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border ${halalOnly ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300' : 'border-slate-700 bg-slate-900 text-slate-500'}`}>
+                    <ShieldCheck className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="text-xs font-semibold text-slate-100">Halal-screened pairs only</span>
+                      {halalOnly && (
+                        <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                          {halalData.tradable.length} / {halalData.listed} tradable
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                      {halalOnly
+                        ? 'Third-party screen, so verify before trading. Only listed coins with a live USDT pair are shown.'
+                        : 'Limit the pair list to coins on the halal screen.'}
                     </p>
-                  )}
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={halalOnly}
+                    aria-label="Halal-screened pairs only"
+                    onClick={() => setHalalOnly((v) => !v)}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60 ${halalOnly ? 'bg-emerald-500' : 'bg-slate-700'}`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${halalOnly ? 'translate-x-4' : ''}`} />
+                  </button>
                 </div>
               </div>
 
@@ -1203,6 +1309,35 @@ export default function AlgoBots({ accounts, tickers }) {
                   <div className="text-[10px] text-slate-500 font-mono mt-1">
                     Levels derived from square numbers around current price. Bot auto-recenters when price reaches the trigger level above/below center.
                   </div>
+                </div>
+              )}
+
+              {(botType === 'GRID_BOT' || botType === 'QSL') && (
+                <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-200">Risk guards <span className="font-normal text-slate-500">(optional)</span></span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400">Max inventory (coins)</label>
+                      <input type="number" step="any" min="0" value={maxInventory} onChange={(e) => setMaxInventory(e.target.value)} placeholder="no cap"
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-white mt-1 placeholder:text-slate-600" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Stop-loss price</label>
+                      <input type="number" step="any" min="0" value={stopLossPrice} onChange={(e) => setStopLossPrice(e.target.value)} placeholder="off"
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-rose-300 mt-1 placeholder:text-slate-600" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Take-profit price</label>
+                      <input type="number" step="any" min="0" value={takeProfitPrice} onChange={(e) => setTakeProfitPrice(e.target.value)} placeholder="off"
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-emerald-300 mt-1 placeholder:text-slate-600" />
+                    </div>
+                  </div>
+                  <p className="text-[10px] leading-snug text-slate-500">
+                    Buys pause once held coins reach the cap. Crossing a stop price sells the inventory at market and stops the bot.
+                    Stop-loss must sit below the {botType === 'GRID_BOT' ? 'grid range' : 'current price'} and take-profit above it.
+                  </p>
                 </div>
               )}
 

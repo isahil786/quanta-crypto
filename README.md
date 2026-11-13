@@ -26,32 +26,18 @@ against live Binance public prices. State resets on restart.
 - Halal screening: `server/data/halal_coins.json` (coinranking halal list) is joined with live Binance/OKX prices at `GET /api/halal/coins`. The Algo Bots pair picker defaults to "Halal only" and lists every halal coin with a live USDT pair, not just the top movers. Bot creation rejects non-halal pairs when the client sends `halalOnly: true` or the server runs with `HALAL_ONLY=true`. This is a third-party screen, not a religious ruling.
 - Binance blocked from your host (HTTP 451, common on Render)? Market data and websocket tickers fall back to Binance mirror hosts, then OKX. `GET /api/health` is the health-check route; in production the server binds 0.0.0.0.
 
-## Grid Bot — Ladder & Trailing TP/SL
 
-### How the ladder works
-Each grid bot creates a price ladder between `lowerPrice` and `upperPrice` split into `gridCount` rungs:
+## Execution realism
 
-- **ARITHMETIC** — evenly spaced prices from lower to upper.
-- **GEOMETRIC** — exponentially spaced prices from lower to upper.
-- Rungs **below** the live price at creation are `BUY` side with a sell target above them.
-- Rungs **above** the live price at creation are `SELL` side with a buy target below them.
-- When a buy rung fills at `price`, it flips to a `SELL` limit at `targetPrice`. When a sell rung fills, it flips back to a `BUY` limit at `targetPrice`. Rungs cycle buy → sell → buy on each round trip.
+The paper engine models the costs that decide whether a strategy actually makes money.
 
-### Ladder options (per `server/bots.js:generateGridRungs`)
-| Option | Behavior |
-|--------|----------|
-| Uneven split | The number of buy rungs below market vs sell rungs above is determined by where `lowerPrice`/`upperPrice` sit relative to the live price; you can set `lowerPrice` closer to market for more buys above, or wider for fewer buys. |
-| Asymmetric spacing | GEOMETRIC mode spaces rungs multiplicatively (wider gaps higher up, tighter lower down) instead of ARITHMETIC's equal steps. |
-| No flipping | Not supported — every rung always flips side after a fill so it can harvest the next spread in the opposite direction. |
-| Trailing ladder | Not supported — ladders are fixed at creation; QSL bots recentre square levels on trigger instead (`server/bots.js:recenterQSL`). |
-| Size allocation | Every rung uses the same `sizePerGrid`; total seed inventory = sellRungCount × sizePerGrid, bought at market on creation. |
+| Feature | Behaviour |
+| --- | --- |
+| **Margin reservation** | A resting limit order locks what it needs: USDT for a spot BUY, margin for futures, coins for a spot SELL. Funds come back on fill, cancel, edit or account removal. An order you can't fund is refused at placement, not at fill time. The wallet shows the locked amount. |
+| **Maker / taker fees** | Resting limit orders that get hit pay the **maker** fee; market orders, marketable limits, TWAP/breakout fills, GTT triggers and TP/SL exits pay the **taker** fee. Grid/QSL rung fills are maker fills. Rates live in `server/brokers/*.js` (`makerFeePercent` / `takerFeePercent`) and are estimates: set them to your own fee tier. |
+| **Slippage** | Taker fills move against the order by `base spread + coef * sqrt(order value / 24h volume)` (capped). Bigger orders and thinner coins slip more. Maker fills have none. A marketable limit never fills worse than its limit price. Mirror replicas are refused if expected slippage exceeds their `maxSlippagePercent`. Tune with `SLIPPAGE=off`, `SLIPPAGE_BASE_BPS` (1), `SLIPPAGE_IMPACT_COEF` (0.03), `SLIPPAGE_MAX_PERCENT` (5). |
+| **Funding** | Futures positions held through 00:00 / 08:00 / 16:00 UTC pay or receive `size * mark * rate` (longs pay when the rate is positive). Rates come from the Binance USDT-M premium index when reachable, otherwise `FUNDING_DEFAULT_RATE` (default 0.0001 = 0.01%). A position opened after a boundary pays nothing for it, and catch-up after downtime is capped at 3 intervals. If the wallet is empty, funding is taken from the position's margin. |
 
-### Trailing TP / SL per rung
-Pass `trailingTpSlPercent` (e.g. `1.0` for 1%) when creating a GRID_BOT:
+`GET /api/costs` shows the active fee/slippage/funding settings, `GET /api/funding` the funding payments. Trades record `liquidity` (MAKER/TAKER), `slippagePct` and `refPrice`.
 
-- On each buy fill, the rung records `entryPrice`, `peakPrice`, `tpPrice = entry × (1 + pct)`, `slPrice = entry × (1 - pct)`.
-- While the rung holds a sell side, `peakPrice` trails upward as live price rises and `slPrice` is recomputed as `peak × (1 - pct)`.
-- The rung sells at market on the first of: grid target hit, trailing take-profit hit, or trailing stop-loss hit.
-- After the sell, the rung flips back to BUY and TP/SL tracking is cleared.
-
-Grid realized profit (`/api/bots` stats) sums the net of each filled sell (`gross - fees`) across all rungs.
+Known limits: funding does not move a position's liquidation price; bots' internal rung orders and GTT rules do not reserve funds (only resting limit orders placed through the order API do).

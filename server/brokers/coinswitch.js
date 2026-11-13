@@ -30,6 +30,8 @@ export const COINSWITCH_META = {
     supportsOrderBook: true,
     supportsDepth: true,
     feeEstimatePercent: 0.1,
+    makerFeePercent: 0.1, // estimate: no maker discount on spot; adjust to your tier
+    takerFeePercent: 0.1,
   },
 };
 

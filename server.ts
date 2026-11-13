@@ -5,6 +5,9 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { loadState, startPersistence } from './server/persist.js';
 import {
   BROKERS,
   DEFAULT_BROKER,
@@ -21,9 +24,12 @@ import {
   holdings,
   gttRules,
   mirrorConfig,
+  fundingLog,
 } from './server/state.js';
 import { uid, mask, isPositiveNumber } from './server/util.js';
-import { checkMargin, settleOrderFill } from './server/positions.js';
+import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmounts } from './server/positions.js';
+import { feePct as feeFor, feeRates, executionCost, slippageConfig } from './server/costs.js';
+import { FUNDING_INTERVAL_MS, defaultFundingRate } from './server/funding.js';
 import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
 import { halalMarket, isHalalSymbol } from './server/halal.js';
 import {
@@ -42,10 +48,9 @@ import {
   seedGridInventory,
   generateGridRungs,
   generateSquareLevels,
-  f_decimalPlaces,
-  f_naturalNumber,
+  qslScale,
+  checkGridSpacing,
   calculateOptimalGridParams,
-  executeFill,
 } from './server/bots.js';
 import {
   simulateGridBot,
@@ -57,11 +62,16 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
+// Behind Render/Docker proxies every client shares the proxy's IP unless we trust X-Forwarded-For,
+// which would put the whole world into ONE rate-limit bucket. TRUST_PROXY=<hops> overrides the default.
+app.set('trust proxy', Number(process.env.TRUST_PROXY ?? (process.env.NODE_ENV === 'production' ? 1 : 0)));
+app.use(helmet({ contentSecurityPolicy: false })); // CSP off: Vite dev injects inline scripts
 app.use(express.json({ limit: '100kb' }));
+app.use('/api', rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_PER_MIN) || 600, standardHeaders: true, legacyHeaders: false }));
 
 // Optional shared-secret auth. Set API_TOKEN to require `Authorization: Bearer <token>`
 // (or `x-api-token`) on every /api request. Strongly recommended whenever HOST is not loopback.
@@ -260,9 +270,9 @@ app.delete('/api/accounts/:id', (req, res) => {
   }
   // Remove everything that referenced the account
   const drop = (arr) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i].accountId === removed.id) arr.splice(i, 1); };
-  for (const o of orders) if (o.accountId === removed.id && o.status === 'OPEN') { o.status = 'CANCELLED'; o.notes = 'Account removed'; }
+  for (const o of orders) if (o.accountId === removed.id && o.status === 'OPEN') { releaseOrder(removed, o); o.status = 'CANCELLED'; o.notes = 'Account removed'; }
   [positions, holdings, gttRules].forEach(drop);
-  for (const b of botsState.bots) if (b.accountId === removed.id && b.status === 'RUNNING') b.status = 'CANCELLED';
+  for (const b of botsState.bots) if (b.accountId === removed.id && (b.status === 'RUNNING' || b.status === 'PAUSED')) { b.status = 'CANCELLED'; releaseBotSymbol(b); }
   mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
   res.json({ success: true, removedId: removed.id });
 });
@@ -453,8 +463,6 @@ app.post('/api/orders', async (req, res) => {
     const execPrice = orderType === 'MARKET' ? liveMarketPrice : num(req.body.price);
     const tpSlError = checkTpSl(side, execPrice, tpPrice, slPrice);
     if (tpSlError) return res.status(400).json({ error: tpSlError });
-    const feePct = BROKERS[brokerId]?.capabilities?.feeEstimatePercent ?? 0.1;
-
     const newOrder: any = {
       id: uid('ord'),
       accountId: account.id,
@@ -482,22 +490,33 @@ app.post('/api/orders', async (req, res) => {
       (side === 'SELL' && execPrice <= liveMarketPrice);
 
     if (shouldFill) {
-      const check = checkMargin(account, newOrder, execPrice, feePct);
+      // Taker: crosses the book, so the price slips against the order (more for bigger orders) and the taker fee applies
+      const ex = executionCost({ broker: brokerId, side, refPrice: liveMarketPrice, size, quoteVolume: livePair.quoteVolume });
+      // A marketable limit order never fills worse than its own limit price
+      const fillPrice = orderType === 'LIMIT' ? (side === 'BUY' ? Math.min(ex.price, execPrice) : Math.max(ex.price, execPrice)) : ex.price;
+      const check = checkMargin(account, newOrder, fillPrice, ex.feePct);
       if (!check.ok) {
         return res.status(400).json({
           error: check.reason,
         });
       }
-      // A marketable limit order fills at the market, not at its (better-for-the-broker) limit
-      settleOrderFill(account, newOrder, orderType === 'MARKET' ? execPrice : liveMarketPrice, feePct);
+      settleOrderFill(account, newOrder, fillPrice, ex.feePct, { liquidity: 'TAKER', slippagePct: ex.slippagePct, refPrice: liveMarketPrice });
       newOrder.price = execPrice;
+    } else {
+      // Resting maker order: it must be fully fundable now, and the funds are locked until it fills or is cancelled
+      const makerFee = feeFor(brokerId, 'MAKER');
+      const check = checkMargin(account, newOrder, execPrice, makerFee);
+      if (!check.ok) return res.status(400).json({ error: check.reason });
+      newOrder.liquidity = 'MAKER';
     }
 
     orders.unshift(newOrder);
     if (orders.length > 10000) orders.length = 10000;
+    // Reserve after the order is in the book so the wallet's locked balance counts it
+    if (newOrder.status === 'OPEN') reserveOrder(account, newOrder, execPrice, feeFor(brokerId, 'MAKER'));
 
     // Mirror trading: replicate only master orders that actually filled
-    if (shouldMirror(account, newOrder)) mirrorFilledOrder(account, newOrder, liveMarketPrice);
+    if (shouldMirror(account, newOrder)) mirrorFilledOrder(account, newOrder, liveMarketPrice, { quoteVolume: livePair.quoteVolume });
 
     res.status(201).json(newOrder);
   } catch (err) {
@@ -517,19 +536,39 @@ app.put('/api/orders/:id', (req, res) => {
   if (size !== undefined && !isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
   const brokerMeta = BROKERS[order.broker];
 
+  // Re-validate the edited order the same way as a new one
+  if (order.orderType !== 'LIMIT') return res.status(409).json({ error: 'Only resting LIMIT orders can be modified.' });
+  const account = accounts.find((a) => a.id === order.accountId);
+  if (!account) return res.status(404).json({ error: 'Order account not found' });
+  const newPrice = price !== undefined ? num(price) : order.price;
+  const newSize = size !== undefined ? num(size) : order.size;
+  const tpSlErr = checkTpSl(order.side, newPrice, order.tpPrice, order.slPrice);
+  if (tpSlErr) return res.status(400).json({ error: tpSlErr });
+  // Free the old reservation so the edit is checked against what the order could use, then lock the new amount
+  const makerFee = feeFor(order.broker, 'MAKER');
+  const held = releaseOrder(account, order);
+  const fundCheck = checkMargin(account, { ...order, price: newPrice, size: newSize }, newPrice, makerFee);
+  if (!fundCheck.ok) {
+    reserveAmounts(account, order, held.usdt, held.base); // edit refused: put the old reservation back
+    return res.status(400).json({ error: fundCheck.reason });
+  }
+
   // CoinSwitch modify order: Cancel + Replace pattern
   if (order.broker === 'coinswitch') {
     order.status = 'CANCELLED';
     const replacedOrder = {
       ...order,
       id: uid('ord-replace'),
-      price: price !== undefined ? num(price) : order.price,
-      size: size !== undefined ? num(size) : order.size,
+      price: newPrice,
+      size: newSize,
       status: 'OPEN',
+      reservedUSDT: 0,
+      reservedBase: 0,
       timestamp: new Date().toISOString(),
       notes: `Replaced from ${order.id} via CoinSwitch cancel-and-replace`,
     };
     orders.unshift(replacedOrder);
+    reserveOrder(account, replacedOrder, newPrice, makerFee);
     return res.json({
       action: 'CANCEL_AND_REPLACE',
       message: 'CoinSwitch does not support in-place order modification. Cancelled original order and created new replacement order.',
@@ -538,8 +577,9 @@ app.put('/api/orders/:id', (req, res) => {
     });
   }
 
-  if (price !== undefined) order.price = num(price);
-  if (size !== undefined) order.size = num(size);
+  order.price = newPrice;
+  order.size = newSize;
+  reserveOrder(account, order, newPrice, makerFee);
   res.json({ action: 'MODIFIED', message: `Order updated on ${brokerMeta.displayName}`, order });
 });
 
@@ -549,6 +589,8 @@ app.delete('/api/orders/:id', (req, res) => {
   if (order.status !== 'OPEN') {
     return res.status(409).json({ error: `Only OPEN orders can be cancelled (this order is ${order.status}).` });
   }
+  const acct = accounts.find((a) => a.id === order.accountId);
+  if (acct) releaseOrder(acct, order); // give the reserved funds back
   order.status = 'CANCELLED';
   res.json({ success: true, message: `Order ${order.id} cancelled successfully`, order });
 });
@@ -556,6 +598,20 @@ app.delete('/api/orders/:id', (req, res) => {
 // -------------------------------------------------------------
 // 5. Trades, Positions & Holdings (Updated against Live Rates)
 // -------------------------------------------------------------
+// Execution-cost model in force (fees per broker, slippage, funding) so the UI can show it
+app.get('/api/costs', (_req, res) => {
+  res.json({
+    fees: Object.fromEntries(Object.keys(BROKERS).map((b) => [b, feeRates(b)])),
+    slippage: slippageConfig(),
+    funding: { intervalHours: FUNDING_INTERVAL_MS / 3600000, defaultRate: defaultFundingRate(), source: 'Binance USDT-M premium index when reachable, else default' },
+  });
+});
+
+app.get('/api/funding', (_req, res) => {
+  const total = fundingLog.reduce((s, e) => s + e.paymentUSDT, 0);
+  res.json({ totalPaidUSDT: Number(total.toFixed(6)), events: fundingLog.slice(0, 200) });
+});
+
 app.get('/api/trades', (req, res) => {
   res.json(trades);
 });
@@ -591,9 +647,10 @@ app.post('/api/positions/:id/close', async (req, res) => {
   if (!account) return res.status(404).json({ error: 'Position account not found' });
 
   let price = pos.markPrice;
+  let quoteVolume;
   try {
     const live = (await getLivePriceIndex()).get(pos.symbol);
-    if (live) price = live.price;
+    if (live) { price = live.price; quoteVolume = live.quoteVolume; }
   } catch {
     /* fall back to last stored mark price */
   }
@@ -612,7 +669,8 @@ app.post('/api/positions/:id/close', async (req, res) => {
     timestamp: new Date().toISOString(),
   };
   const closedSnapshot = { ...pos };
-  const trade = settleOrderFill(account, closing, price, BROKERS[pos.broker]?.capabilities?.feeEstimatePercent ?? 0.1);
+  const ex = executionCost({ broker: pos.broker, side: closing.side, refPrice: price, size: pos.size, quoteVolume });
+  const trade = settleOrderFill(account, closing, ex.price, ex.feePct, { liquidity: 'TAKER', slippagePct: ex.slippagePct, refPrice: price });
   orders.unshift(closing);
 
   res.json({
@@ -712,7 +770,7 @@ app.delete('/api/gtt/:id', (req, res) => {
 app.get('/api/mirror', (req, res) => {
   res.json({
     config: mirrorConfig,
-    masterAccount: accounts.find((a) => a.id === mirrorConfig.masterAccountId) || accounts[0],
+    masterAccount: sanitizeAccount(accounts.find((a) => a.id === mirrorConfig.masterAccountId) || accounts[0]),
     accounts: accounts.map(sanitizeAccount),
   });
 });
@@ -825,6 +883,10 @@ app.post('/api/bots', async (req, res) => {
       levelsEachSide,
       triggerLevel,
       halalOnly,
+      // Risk limits (grid / QSL): all optional
+      maxInventory,
+      stopLossPrice,
+      takeProfitPrice,
     } = req.body;
 
     const account = accounts.find((a) => a.id === accountId);
@@ -877,6 +939,38 @@ app.post('/api/bots', async (req, res) => {
     }
     const livePrice = liveCoin.price;
     const precision = liveCoin.precision;
+    const botFeePct = BROKERS[account.broker]?.capabilities?.feeEstimatePercent ?? 0.1;
+
+    // A breakout trigger must lie ahead of the market, otherwise the bot fires on its first cycle
+    if (type === 'BREAKOUT_CHASER') {
+      const sd = String(side).toUpperCase();
+      if (sd === 'BUY' && Number(triggerPrice) <= livePrice) return res.status(400).json({ error: `A BUY breakout trigger must be above the current price ${livePrice}` });
+      if (sd === 'SELL' && Number(triggerPrice) >= livePrice) return res.status(400).json({ error: `A SELL breakout trigger must be below the current price ${livePrice}` });
+    }
+    if (type === 'GRID_BOT' || type === 'QSL') {
+      const has = (v) => v !== undefined && v !== null && v !== '';
+      if (has(maxInventory) && !isPositiveNumber(maxInventory)) return res.status(400).json({ error: 'maxInventory must be a positive number' });
+      if (has(stopLossPrice) && !isPositiveNumber(stopLossPrice)) return res.status(400).json({ error: 'stopLossPrice must be a positive number' });
+      if (has(takeProfitPrice) && !isPositiveNumber(takeProfitPrice)) return res.status(400).json({ error: 'takeProfitPrice must be a positive number' });
+      const floor = type === 'GRID_BOT' ? Number(lowerPrice) : livePrice;
+      const ceil = type === 'GRID_BOT' ? Number(upperPrice) : livePrice;
+      if (has(stopLossPrice) && Number(stopLossPrice) >= floor) return res.status(400).json({ error: `stopLossPrice must be below ${type === 'GRID_BOT' ? 'the grid lower price' : 'the current price'} ${floor}` });
+      if (has(takeProfitPrice) && Number(takeProfitPrice) <= ceil) return res.status(400).json({ error: `takeProfitPrice must be above ${type === 'GRID_BOT' ? 'the grid upper price' : 'the current price'} ${ceil}` });
+    }
+    if (type === 'GRID_BOT') {
+      const spacingErr = checkGridSpacing({ lowerPrice, upperPrice, gridCount, gridMode, feePercent: botFeePct });
+      if (spacingErr) return res.status(400).json({ error: spacingErr });
+    }
+
+    // Risk limits (grid/QSL). Inventory cap: grids are naturally bounded by their buy rungs; QSL recentres
+    // downward, so it defaults to two sides' worth of levels unless the caller picks a cap.
+    const riskLimits: any = {};
+    if (type === 'GRID_BOT' || type === 'QSL') {
+      const natural = type === 'GRID_BOT' ? Number(gridCount) * Number(sizePerGrid) : Number(levelsEachSide) * 2 * Number(sizePerGrid);
+      riskLimits.maxInventory = isPositiveNumber(maxInventory) ? Number(maxInventory) : Number(natural.toFixed(8));
+      if (isPositiveNumber(stopLossPrice)) riskLimits.stopLossPrice = Number(stopLossPrice);
+      if (isPositiveNumber(takeProfitPrice)) riskLimits.takeProfitPrice = Number(takeProfitPrice);
+    }
 
     const botId = uid('bot');
     let newBot: any = {
@@ -889,6 +983,7 @@ app.post('/api/bots', async (req, res) => {
       side: String(side).toUpperCase(),
       status: 'RUNNING',
       createdAt: new Date().toISOString(),
+      ...riskLimits,
       logs: [
         { time: new Date().toLocaleTimeString(), text: `Bot deployed on ${account.accountName} @ live mark $${livePrice}.` },
       ],
@@ -910,7 +1005,7 @@ app.post('/api/bots', async (req, res) => {
         ...newBot,
         triggerPrice: Number(triggerPrice),
         size: Number(size),
-        leverage: 1,
+        leverage: Math.min(Math.max(Number(leverage) || 1, 1), 125),
         tpPrice: tpPrice ? Number(tpPrice) : undefined,
         slPrice: slPrice ? Number(slPrice) : undefined,
       };
@@ -946,33 +1041,6 @@ app.post('/api/bots', async (req, res) => {
         return res.status(400).json({ error: `Cannot fund grid starting inventory: ${seed.reason}` });
       }
       const seeded = seed.qty;
-
-      // Immediately fill buy rungs the market has already traded through at deployment.
-      // These flip to sell limits so the existing sell-on-hit logic captures the upside.
-      for (const rung of generatedRungs) {
-        if (rung.side === 'BUY' && livePrice >= rung.price) {
-          const buyPrice = rung.price;
-          const sellTarget = rung.targetPrice;
-          const initRes = executeFill({ bot: newBot, side: 'BUY', price: rung.price, size: rung.orderSize, tag: 'grid-init' });
-          if (initRes.ok) {
-            rung.fillsCount += 1;
-            newBot.completedRounds += 1;
-            newBot.totalBaseHoldings = Number(((newBot.totalBaseHoldings || 0) + rung.orderSize).toFixed(8));
-            rung.side = 'SELL';
-            [rung.price, rung.targetPrice] = [rung.targetPrice, rung.price];
-            newBot.logs.unshift({
-              time: new Date().toLocaleTimeString(),
-              text: `[Grid Init] Pre-filled buy ${rung.orderSize} ${symbol} @ $${buyPrice.toLocaleString()}. Sell limit @ $${sellTarget.toLocaleString()}.`,
-            });
-          } else {
-            newBot.logs.unshift({
-              time: new Date().toLocaleTimeString(),
-              text: `[Grid Init] Skipped buy rung @ $${buyPrice.toLocaleString()}: ${initRes.reason}`,
-            });
-          }
-        }
-      }
-
       const buyRungsCount = generatedRungs.filter((r) => r.side === 'BUY').length;
       const sellRungsCount = generatedRungs.filter((r) => r.side === 'SELL').length;
       newBot.logs.unshift({
@@ -982,13 +1050,15 @@ app.post('/api/bots', async (req, res) => {
     } else if (type === 'QSL') {
       const levelsEachSideNum = Number(levelsEachSide);
       const triggerLevelNum = Number(triggerLevel);
+      const scale = qslScale(livePrice, botFeePct);
       const generatedLevels = generateSquareLevels({
-        centerNumber: f_naturalNumber(livePrice),
+        centerNumber: scale.baseNumber,
         levelsEachSide: levelsEachSideNum,
         currentPrice: livePrice,
-        multiplier: Math.pow(10, f_decimalPlaces(livePrice)),
+        multiplier: scale.multiplier,
         sizePerGrid: Number(sizePerGrid),
         precision,
+        stride: scale.stride,
       });
 
       newBot = {
@@ -998,9 +1068,11 @@ app.post('/api/bots', async (req, res) => {
         sizePerGrid: Number(sizePerGrid),
         initialPrice: livePrice,
         currentPrice: livePrice,
-        baseNumber: f_naturalNumber(livePrice),
-        multiplier: Math.pow(10, f_decimalPlaces(livePrice)),
-        decimalPlaces: f_decimalPlaces(livePrice),
+        baseNumber: scale.baseNumber,
+        multiplier: scale.multiplier,
+        decimalPlaces: scale.decimals,
+        stride: scale.stride,
+        levelSpacingPercent: scale.spacingPct,
         rungs: generatedLevels,
         levels: generatedLevels,
         realizedProfitUSDT: 0,
@@ -1027,8 +1099,7 @@ app.post('/api/bots', async (req, res) => {
     botsState.bots.unshift(newBot);
 
     // Track symbol subscription for WS auto-unsubscribe on delete
-    const sym = String(symbol).toUpperCase();
-    symbolBotCounts.set(sym, (symbolBotCounts.get(sym) || 0) + 1);
+    trackBotSymbol(newBot);
 
     res.status(201).json(newBot);
   } catch (err) {
@@ -1074,17 +1145,7 @@ app.delete('/api/bots/:id', (req, res) => {
     return res.status(404).json({ error: 'Bot not found' });
   }
   const removed = botsState.bots.splice(index, 1)[0];
-
-  // Decrement symbol subscription and auto-unsubscribe WS when no bots remain
-  const sym = String(removed.symbol).toUpperCase();
-  const current = symbolBotCounts.get(sym) || 0;
-  if (current > 0) {
-    symbolBotCounts.set(sym, current - 1);
-    if (current - 1 === 0) {
-      symbolBotCounts.delete(sym);
-      unsubscribeBinanceWs(sym);
-    }
-  }
+  releaseBotSymbol(removed);
 
   res.json({ success: true, removedId: removed.id });
 });
@@ -1124,8 +1185,8 @@ app.post('/api/test-endpoints', (req, res) => {
       exchange: meta.displayName,
       userId: `user_${broker}_82410`,
       tier: 'VIP 1',
-      makerFeeRate: meta.capabilities.feeEstimatePercent * 0.8,
-      takerFeeRate: meta.capabilities.feeEstimatePercent,
+      makerFeeRate: feeRates(broker).maker,
+      takerFeeRate: feeRates(broker).taker,
       twoFactorEnabled: true,
       apiAccess: ['READ', 'TRADE'],
     };
@@ -1177,7 +1238,30 @@ app.post('/api/test-endpoints', (req, res) => {
 const subscribedSymbols = new Set<string>();
 const binanceWsBySymbol = new Map<string, WebSocket>();
 const wsClients = new Set<WebSocket>();
+const MAX_WS_CLIENTS = Number(process.env.MAX_WS_CLIENTS) || 100;
 const symbolBotCounts = new Map<string, number>();
+
+/** Count a bot against its symbol's websocket subscription (once per bot). */
+function trackBotSymbol(bot) {
+  if (bot._wsCounted) return;
+  bot._wsCounted = true;
+  const sym = String(bot.symbol).toUpperCase();
+  symbolBotCounts.set(sym, (symbolBotCounts.get(sym) || 0) + 1);
+}
+/** Release a bot's subscription count; unsubscribe the stream when no bot needs it. */
+function releaseBotSymbol(bot) {
+  if (!bot._wsCounted) return;
+  bot._wsCounted = false;
+  const sym = String(bot.symbol).toUpperCase();
+  const left = (symbolBotCounts.get(sym) || 1) - 1;
+  if (left > 0) { symbolBotCounts.set(sym, left); return; }
+  symbolBotCounts.delete(sym);
+  unsubscribeBinanceWs(sym);
+}
+/** Bots that stopped, completed, errored or lost their account no longer hold a subscription. */
+function releaseFinishedBotSymbols() {
+  for (const b of botsState.bots) if (b._wsCounted && b.status !== 'RUNNING' && b.status !== 'PAUSED') releaseBotSymbol(b);
+}
 
 function broadcast(message: any) {
   const payload = JSON.stringify(message);
@@ -1340,7 +1424,15 @@ async function startServer() {
     });
   }
 
+  if (process.env.STATE_FILE) {
+    const restored = loadState(process.env.STATE_FILE);
+    for (const b of botsState.bots) if (b.status === 'RUNNING' || b.status === 'PAUSED') { b._wsCounted = false; trackBotSymbol(b); }
+    const flush = startPersistence(process.env.STATE_FILE);
+    for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => { flush(); process.exit(0); });
+    console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${process.env.STATE_FILE}`);
+  }
   startBotLoop();
+  setInterval(releaseFinishedBotSymbols, 5000).unref();
   // Containers (Render/Docker) must listen on all interfaces; local dev stays on loopback
   const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
@@ -1350,9 +1442,20 @@ async function startServer() {
     console.log(`QuantaCrypto Terminal (paper trading) running at http://${HOST}:${PORT}`);
   });
 
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    maxPayload: 16 * 1024, // subscribe messages are tiny; refuse anything big
+    // The /api auth middleware does not cover upgrades, so check the token here (?token=...).
+    verifyClient: (info, done) => {
+      if (!API_TOKEN) return done(true);
+      const token = new URL(info.req.url || '', 'http://x').searchParams.get('token') || '';
+      return tokenOk(token) ? done(true) : done(false, 401, 'Unauthorized');
+    },
+  });
 
   wss.on('connection', (ws: WebSocket) => {
+    if (wsClients.size >= MAX_WS_CLIENTS) { ws.close(1013, 'Server busy'); return; }
     wsClients.add(ws);
 
     ws.send(JSON.stringify({
@@ -1395,4 +1498,4 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.QUANTA_TEST) startServer();

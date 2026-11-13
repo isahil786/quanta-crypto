@@ -26,6 +26,8 @@ export const DELTA_META = {
     supportsOrderBook: true,
     supportsDepth: true,
     feeEstimatePercent: 0.05,
+    makerFeePercent: 0.02, // estimate; adjust to your fee tier
+    takerFeePercent: 0.05,
   },
 };
 

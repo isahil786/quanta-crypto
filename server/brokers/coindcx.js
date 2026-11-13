@@ -27,6 +27,8 @@ export const COINDCX_META = {
     supportsOrderBook: true,
     supportsDepth: true,
     feeEstimatePercent: 0.1,
+    makerFeePercent: 0.08, // estimate; adjust to your fee tier
+    takerFeePercent: 0.1,
   },
 };
 

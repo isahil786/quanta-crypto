@@ -1,10 +1,9 @@
 // Mirror trading: replicate a filled master order onto the configured replica accounts.
 import { accounts, orders, mirrorConfig } from './state.js';
-import { BROKERS } from './brokers/index.js';
 import { checkMargin, settleOrderFill } from './positions.js';
+import { executionCost } from './costs.js';
 import { uid, isPositiveNumber, capList } from './util.js';
 
-const feePctFor = (broker) => BROKERS[broker]?.capabilities?.feeEstimatePercent ?? 0.1;
 
 /** Only manual orders mirror: not bot/rule fills and not mirror orders themselves. */
 export function shouldMirror(account, order) {
@@ -12,7 +11,7 @@ export function shouldMirror(account, order) {
 }
 
 /** Replicate `order` (already FILLED on the master) at `refPrice`. */
-export function mirrorFilledOrder(masterAccount, order, refPrice) {
+export function mirrorFilledOrder(masterAccount, order, refPrice, ctx = {}) {
   const { symbol, side, orderType, size } = order;
   const leverage = order.leverage || 1;
   for (const replica of mirrorConfig.replicas) {
@@ -39,14 +38,18 @@ export function mirrorFilledOrder(masterAccount, order, refPrice) {
       timeInForce: 'GTC', leverage: Math.min(leverage, replicaAcc.broker === 'delta' ? 100 : 20),
       timestamp: new Date().toISOString(), fee: 0, notes: `Mirror of ${order.id}`,
     };
-    // Replicas fill at the same reference price as the master, so there is no slippage to enforce.
-    const feePct = feePctFor(replicaAcc.broker);
-    const check = checkMargin(replicaAcc, repOrder, refPrice, feePct);
+    // Replicas are taker orders: they slip with their own size, and are refused if that exceeds maxSlippagePercent
+    const ex = executionCost({ broker: replicaAcc.broker, side, refPrice, size: replicaSize, quoteVolume: ctx.quoteVolume });
+    if (Number.isFinite(replica.maxSlippagePercent) && ex.slippagePct > replica.maxSlippagePercent) {
+      mirrorConfig.logs.unshift({ ...logBase, status: 'REJECTED', details: `Expected slippage ${ex.slippagePct}% exceeds the replica limit of ${replica.maxSlippagePercent}%.` });
+      continue;
+    }
+    const check = checkMargin(replicaAcc, repOrder, ex.price, ex.feePct);
     if (!check.ok) {
       mirrorConfig.logs.unshift({ ...logBase, status: 'REJECTED', details: check.reason });
       continue;
     }
-    settleOrderFill(replicaAcc, repOrder, refPrice, feePct);
+    settleOrderFill(replicaAcc, repOrder, ex.price, ex.feePct, { liquidity: 'TAKER', slippagePct: ex.slippagePct, refPrice });
     orders.unshift(repOrder);
     mirrorConfig.logs.unshift({
       ...logBase,

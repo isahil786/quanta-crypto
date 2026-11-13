@@ -247,7 +247,17 @@ export default function Trades({ accounts, activeAccountId }) {
                       <td className="py-2.5 px-4 text-right text-slate-200">${t.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                       <td className="py-2.5 px-4 text-right text-slate-200">{t.size}</td>
                       <td className="py-2.5 px-4 text-right text-slate-200">${t.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                      <td className="py-2.5 px-4 text-right text-slate-400">${t.fee.toFixed(4)}</td>
+                      <td className="py-2.5 px-4 text-right text-slate-400">
+                        ${t.fee.toFixed(4)}
+                        {t.liquidity && (
+                          <span
+                            className={`ml-1.5 rounded px-1 py-px text-[9px] font-bold align-middle ${t.liquidity === 'MAKER' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}
+                            title={`${t.liquidity === 'MAKER' ? 'Maker' : 'Taker'} fill${t.slippagePct ? ` · slippage ${t.slippagePct}% vs ${t.refPrice}` : ''}`}
+                          >
+                            {t.liquidity === 'MAKER' ? 'M' : 'T'}{t.slippagePct ? ` ${t.slippagePct}%` : ''}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2.5 px-4 text-right text-slate-500 text-[11px] font-sans">
                         {new Date(t.timestamp).toLocaleTimeString()}
                       </td>

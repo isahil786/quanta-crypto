@@ -1,19 +1,22 @@
-FROM node:20-alpine
-
+# --- build stage: needs devDependencies (vite, tailwind) ---
+FROM node:20-alpine AS build
 WORKDIR /app
-
-# Install all dependencies (needed for build: vite is a devDependency)
 COPY package.json package-lock.json ./
 RUN npm ci
-
-# Copy source and build frontend into dist/
 COPY . .
 RUN npm run build
 
-# Runtime: server.ts (via tsx) serves API, WS, and the built UI from dist/
-ENV NODE_ENV=production
-ENV PORT=3000
-
+# --- runtime stage: production deps only, non-root ---
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /app/dist ./dist
+COPY server.ts tsconfig.json ./
+COPY server ./server
+RUN mkdir -p /app/data && chown -R node:node /app
+USER node
 EXPOSE 3000
-
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s CMD wget -qO- "http://127.0.0.1:${PORT}/api/health" || exit 1
 CMD ["npm", "start"]

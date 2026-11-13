@@ -243,6 +243,11 @@ export default function Positions({ accounts, activeAccountId }) {
                       </td>
                       <td className="py-3 px-4 text-right text-slate-300">
                         ${pos.margin?.toLocaleString(undefined, { minimumFractionDigits: 2 })} ({pos.leverage}x)
+                        {pos.fundingPaidUSDT ? (
+                          <div className={`text-[10px] ${pos.fundingPaidUSDT > 0 ? 'text-rose-300' : 'text-emerald-300'}`} title="Cumulative funding on this position (negative = received)">
+                            Funding {pos.fundingPaidUSDT > 0 ? '-' : '+'}${Math.abs(pos.fundingPaidUSDT).toFixed(4)}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className={`font-bold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>

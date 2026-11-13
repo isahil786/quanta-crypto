@@ -15,59 +15,33 @@ export function generateSimulationRungs({
   gridMode = 'ARITHMETIC',
   sizePerGrid,
 }) {
-  const rungs = [];
   const count = Math.max(2, Math.min(parseInt(gridCount, 10) || 10, 50));
   const lower = Number(lowerPrice);
   const upper = Number(upperPrice);
   if (!(lower > 0) || !(upper > lower)) {
     throw new Error('Grid range invalid: upper price must be greater than lower price (both > 0).');
   }
-
-  if (gridMode === 'GEOMETRIC') {
-    const ratio = Math.pow(upper / lower, 1 / count);
-    for (let i = 0; i <= count; i++) {
-      const price = rp(lower * Math.pow(ratio, i));
-      const isBuy = price < startPrice;
-      const targetPrice = isBuy
-        ? rp(lower * Math.pow(ratio, i + 1))
-        : rp(lower * Math.pow(ratio, Math.max(0, i - 1)));
-
-      rungs.push({
-        id: `rung-${i}`,
-        index: i,
-        price,
-        targetPrice,
-        side: isBuy ? 'BUY' : 'SELL',
-        size: sizePerGrid,
-        fillsCount: 0,
-        profitCaptured: 0,
-        totalVolume: 0,
-      });
-    }
-  } else {
-    // ARITHMETIC
-    const step = (upper - lower) / count;
-    for (let i = 0; i <= count; i++) {
-      const price = rp(lower + i * step);
-      const isBuy = price < startPrice;
-      const targetPrice = isBuy
-        ? rp(price + step)
-        : rp(price - step);
-
-      rungs.push({
-        id: `rung-${i}`,
-        index: i,
-        price,
-        targetPrice,
-        side: isBuy ? 'BUY' : 'SELL',
-        size: sizePerGrid,
-        fillsCount: 0,
-        profitCaptured: 0,
-        totalVolume: 0,
-      });
-    }
+  // Same layout as the live bot (server/bots.js): one order per interval, no double exposure at the market
+  const ratio = Math.pow(upper / lower, 1 / count);
+  const step = (upper - lower) / count;
+  const line = (i) => rp(gridMode === 'GEOMETRIC' ? lower * Math.pow(ratio, i) : lower + i * step);
+  const rungs = [];
+  for (let i = 0; i < count; i++) {
+    const lo = line(i);
+    const hi = line(i + 1);
+    const isSell = lo >= startPrice && hi > startPrice;
+    rungs.push({
+      id: `rung-${i}`,
+      index: i,
+      price: isSell ? hi : lo,
+      targetPrice: isSell ? lo : hi,
+      side: isSell ? 'SELL' : 'BUY',
+      size: sizePerGrid,
+      fillsCount: 0,
+      profitCaptured: 0,
+      totalVolume: 0,
+    });
   }
-
   return rungs;
 }
 
@@ -97,8 +71,7 @@ export function simulateGridBot({
   const grids = Math.max(3, Math.min(parseInt(gridCount, 10) || 10, 50));
 
   // Determine capital allocation: 50% for cash bids, 50% for coin inventory asks
-  const count = grids + 1;
-  const capitalPerRung = capital / count;
+  const capitalPerRung = capital / grids; // one order per interval
   const sizePerGrid = Number((capitalPerRung / startPrice).toFixed(6));
 
   const rungs = generateSimulationRungs({

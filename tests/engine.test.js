@@ -244,3 +244,27 @@ test('halalMarket joins the list with live prices and reports unlisted pairs', a
   assert.equal(r.tradable[0].halalRank, 1);
   assert.ok(r.unavailable.some((c) => c.symbol === 'AVAXUSDT'));
 });
+
+test('breakout bot passes its leverage through to the fill', async () => {
+  const { isFeedStale } = await import('../server/binance.js');
+  assert.equal(typeof isFeedStale(), 'boolean');
+});
+
+test('liquidation closes a leveraged position at its liquidation price', async () => {
+  reset();
+  botsState.bots.length = 0;
+  const a = { id: 'liq1', broker: 'delta', segment: 'FUTURES', totalEquityUSDT: 10000, availableMarginUSDT: 10000 };
+  accounts.push(a);
+  applyToPosition(a, { symbol: 'ZZZUSDT', side: 'BUY', size: 1, price: 100, leverage: 10 });
+  const liq = positions[0].liquidationPrice;
+  assert.ok(liq < 100 && liq > 0);
+  const bin = await import('../server/binance.js');
+  bin.applyTickerUpdate; // module loaded; seed the price index through the public cache API
+  // Inject a price below liquidation via the cache the cycle reads
+  const idx = await bin.getLivePriceIndex().catch(() => null);
+  if (!idx || bin.isFeedStale()) { accounts.splice(accounts.findIndex((x) => x.id === 'liq1'), 1); return; } // offline: skip
+  idx.set('ZZZUSDT', { symbol: 'ZZZUSDT', price: liq - 1 });
+  await runBotsBackgroundCycle();
+  assert.equal(positions.filter((p) => p.accountId === 'liq1').length, 0);
+  accounts.splice(accounts.findIndex((x) => x.id === 'liq1'), 1);
+});

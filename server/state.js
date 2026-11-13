@@ -96,6 +96,9 @@ export const holdings = [
 
 export const gttRules = [];
 
+// Funding payments applied to futures positions (newest first)
+export const fundingLog = [];
+
 export const mirrorConfig = {
   enabled: true,
   masterAccountId: 'acc-delta-01',

@@ -34,7 +34,9 @@ export default function App() {
   const getWsUrl = useCallback(() => {
     const { protocol, host } = window.location;
     const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${wsProto}//${host}/ws`;
+    let token = '';
+    try { token = localStorage.getItem('apiToken') || ''; } catch { /* storage unavailable */ }
+    return `${wsProto}//${host}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   }, []);
 
   // Merge a WebSocket ticker update into the tickers list
