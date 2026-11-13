@@ -994,6 +994,7 @@ app.post('/api/bots', async (req, res) => {
       ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT'],
     ];
     const baseSymbol = symbol.replace(/USDT$/, '');
+    const botId = uid('bot');
     const correlatedGroup = CORRELATION_GROUPS.find((g) => g.includes(symbol));
     if (correlatedGroup) {
       const conflicting = botsState.bots.some((b) =>
@@ -1007,7 +1008,6 @@ app.post('/api/bots', async (req, res) => {
       }
     }
 
-    const botId = uid('bot');
     let newBot: any = {
       id: botId,
       type,
