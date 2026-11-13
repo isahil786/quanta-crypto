@@ -286,7 +286,36 @@ async function fetchTop100(now) {
 
     const allTickers = await res.json();
 
-    // Filter valid liquid USDT pairs
+    // Populate cachedIndex with ALL USDT pairs from Binance (for halal screening and symbol lookup).
+    // This ensures halalMarket can find every halal coin that has a live USDT pair,
+    // not just high-volume momentum coins.
+    const fullIndex = new Map();
+    for (const t of allTickers) {
+      if (!t.symbol.endsWith('USDT')) continue;
+      const price = parseFloat(t.lastPrice);
+      fullIndex.set(t.symbol, {
+        symbol: t.symbol,
+        base: t.symbol.replace('USDT', ''),
+        quote: 'USDT',
+        name: t.symbol.replace('USDT', ''),
+        price,
+        change24h: parseFloat(t.priceChangePercent),
+        high24h: parseFloat(t.highPrice),
+        low24h: parseFloat(t.lowPrice),
+        volume: parseFloat(t.volume),
+        quoteVolume: parseFloat(t.quoteVolume),
+        tradesCount: parseFloat(t.count),
+        bidPrice: parseFloat(t.bidPrice),
+        askPrice: parseFloat(t.askPrice),
+        weightedAvgPrice: parseFloat(t.weightedAvgPrice),
+        lastUpdate: Date.now(),
+        precision: getPrecision(price),
+        tickSize: price >= 1000 ? 0.1 : price >= 10 ? 0.01 : 0.0001,
+      });
+    }
+    cachedIndex = fullIndex;
+
+    // Filter valid liquid USDT pairs for the momentum top-100 list
     const usdtPairs = allTickers.filter((t) => {
       const sym = t.symbol;
       if (!sym.endsWith('USDT')) return false;
@@ -294,7 +323,6 @@ async function fetchTop100(now) {
       if (LEVERAGED_RE.test(sym)) return false;
       const quoteVol = parseFloat(t.quoteVolume);
       const price = parseFloat(t.lastPrice);
-      // Require at least $1M 24h turnover and price > 0 to filter out dead illiquid pairs
       return quoteVol >= 1000000 && price > 0;
     });
 
@@ -350,7 +378,6 @@ async function fetchTop100(now) {
     }));
 
     cachedTop100 = top100;
-    cachedIndex = new Map(scored.map((c) => [c.symbol, c]));
     lastFetchTime = now;
     feedStatus.stale = false;
     feedStatus.lastError = null;
