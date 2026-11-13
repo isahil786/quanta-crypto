@@ -1,13 +1,13 @@
-// Position, margin and fill accounting for the paper-trading engine.
+// Position, margin and fill accounting for the spot-only paper-trading engine.
 import { positions, trades, holdings, orders } from './state.js';
-import { fundingBoundary } from './funding.js';
 import { uid, capList } from './util.js';
 
 const MAX_TRADES = 10000;
 const EPS = 1e-9;
 
+// Spot only: never opens a leveraged position
 export function opensPosition(account, order) {
-  return account.segment === 'FUTURES' || Number(order.leverage) > 1;
+  return false;
 }
 
 const baseAsset = (symbol) => symbol.replace(/USDT$/, '');
@@ -25,12 +25,11 @@ function ensureHolding(account, asset) {
   return h;
 }
 
-/** Keep the account's USDT wallet row in step with its margin/cash numbers. */
+/** Keep the account's USDT wallet row in step with its cash numbers. */
 export function syncUsdtHolding(account) {
   const h = ensureHolding(account, 'USDT');
-  const futures = account.segment === 'FUTURES';
   h.free = Number(account.availableMarginUSDT.toFixed(6));
-  h.total = futures ? Number(account.totalEquityUSDT.toFixed(6)) : Number((h.free + reservedUSDT(account)).toFixed(6));
+  h.total = Number((h.free + reservedUSDT(account)).toFixed(6));
   h.locked = Number(Math.max(h.total - h.free, 0).toFixed(6));
   h.rateUSDT = 1;
   h.valueUSDT = h.total;
@@ -38,7 +37,7 @@ export function syncUsdtHolding(account) {
 
 // ---- Margin reservation for resting (unfilled) limit orders -------------------------------------
 // A resting order locks what it would need on fill so the same funds cannot back several orders:
-// USDT (or margin) moves out of availableMarginUSDT onto the order; a spot SELL locks base coins.
+// USDT moves out of availableMarginUSDT onto the order; a spot SELL locks base coins.
 
 /** USDT currently reserved by this account's open orders. */
 export function reservedUSDT(account) {
@@ -64,15 +63,7 @@ function syncBaseHolding(account, asset) {
 /** What an order must lock while it rests: { usdt, base }. */
 export function reservationFor(account, order, price, feePercent) {
   const fee = (price * order.size * feePercent) / 100;
-  if (!opensPosition(account, order)) {
-    return order.side === 'BUY' ? { usdt: price * order.size + fee, base: 0 } : { usdt: 0, base: order.size };
-  }
-  const lev = Math.max(Number(order.leverage) || 1, 1);
-  const wantSide = order.side === 'BUY' ? 'LONG' : 'SHORT';
-  const pos = positions.find((p) => p.accountId === account.id && p.symbol === order.symbol);
-  const reducing = pos && pos.side !== wantSide;
-  const newExposure = reducing ? Math.max(order.size - pos.size, 0) : order.size;
-  return { usdt: (newExposure * price) / lev + fee, base: 0 };
+  return order.side === 'BUY' ? { usdt: price * order.size + fee, base: 0 } : { usdt: 0, base: order.size };
 }
 
 /** Lock explicit amounts on an order (used to restore a reservation after a failed edit). */
@@ -102,113 +93,40 @@ export function releaseOrder(account, order) {
   return { usdt, base };
 }
 
-/** Base-asset inventory an account can actually sell: spot balance, or net LONG size on futures. */
+/** Base-asset inventory an account can actually sell: spot holding balance. */
 export function baseInventory(account, symbol) {
-  if (account.segment === 'FUTURES') {
-    const pos = positions.find((p) => p.accountId === account.id && p.symbol === symbol);
-    return pos && pos.side === 'LONG' ? pos.size : 0;
-  }
   return findHolding(account, baseAsset(symbol))?.total || 0;
 }
 
 /**
- * Funds check. Futures/leveraged orders need margin for any new exposure;
- * spot BUYs need USDT, spot SELLs need the base asset.
+ * Funds check. Spot BUYs need USDT, spot SELLs need the base asset.
  */
 export function checkMargin(account, order, price, feePercent = 0.1) {
   const fee = (price * order.size * feePercent) / 100;
-  if (!opensPosition(account, order)) {
-    if (order.side === 'BUY') {
-      const need = price * order.size + fee;
-      return need <= account.availableMarginUSDT + EPS
-        ? { ok: true, required: 0 }
-        : { ok: false, required: Number(need.toFixed(2)), reason: `Insufficient USDT: need ${need.toFixed(2)}, available ${account.availableMarginUSDT.toFixed(2)}` };
-    }
-    const asset = baseAsset(order.symbol);
-    const have = (findHolding(account, asset)?.total || 0) - lockedBase(account, asset); // coins locked by other resting SELLs are not available
-    return have + EPS >= order.size
+  if (order.side === 'BUY') {
+    const need = price * order.size + fee;
+    return need <= account.availableMarginUSDT + EPS
       ? { ok: true, required: 0 }
-      : { ok: false, required: order.size, reason: `Insufficient ${baseAsset(order.symbol)}: need ${order.size}, have ${have}` };
+      : { ok: false, required: Number(need.toFixed(2)), reason: `Insufficient USDT: need ${need.toFixed(2)}, available ${account.availableMarginUSDT.toFixed(2)}` };
   }
-  const lev = Math.max(Number(order.leverage) || 1, 1);
-  const wantSide = order.side === 'BUY' ? 'LONG' : 'SHORT';
-  const pos = positions.find((p) => p.accountId === account.id && p.symbol === order.symbol);
-  const reducing = pos && pos.side !== wantSide;
-  const newExposure = reducing ? Math.max(order.size - pos.size, 0) : order.size;
-  const required = (newExposure * price) / lev + fee;
-  return required <= account.availableMarginUSDT + EPS
-    ? { ok: true, required: Number(required.toFixed(2)) }
-    : { ok: false, required: Number(required.toFixed(2)), reason: `Insufficient margin: need ${required.toFixed(2)} USDT, available ${account.availableMarginUSDT.toFixed(2)} USDT` };
+  const asset = baseAsset(order.symbol);
+  const have = (findHolding(account, asset)?.total || 0) - lockedBase(account, asset);
+  return have + EPS >= order.size
+    ? { ok: true, required: 0 }
+    : { ok: false, required: order.size, reason: `Insufficient ${baseAsset(order.symbol)}: need ${order.size}, have ${have}` };
 }
 
 function liquidationPrice(side, entry, leverage) {
-  // Simplified isolated-margin estimate; ignores maintenance margin and funding.
+  // Not used in spot mode; kept for signature compatibility only
   return Number((side === 'LONG' ? entry * (1 - 0.9 / leverage) : entry * (1 + 0.9 / leverage)).toFixed(8));
 }
 
 /**
- * Apply a fill to the account's net position for the symbol.
- * Same side -> grows/averages. Opposite side -> reduces, closes, or flips.
- * Returns realised PnL.
+ * Apply a fill to the account's spot holding for the symbol.
+ * BUY increases base holding and avg cost; SELL reduces holding and realises PnL.
  */
 export function applyToPosition(account, { symbol, side, size, price, leverage = 1, tpPrice, slPrice }) {
-  const lev = Math.max(Number(leverage) || 1, 1);
-  const wantSide = side === 'BUY' ? 'LONG' : 'SHORT';
-  let pos = positions.find((p) => p.accountId === account.id && p.symbol === symbol);
-  let realized = 0;
-  let remaining = size;
-
-  if (pos && pos.side !== wantSide) {
-    const closeSize = Math.min(remaining, pos.size);
-    const pnl = (pos.side === 'LONG' ? price - pos.entryPrice : pos.entryPrice - price) * closeSize;
-    const releasedMargin = pos.margin * (closeSize / pos.size);
-    realized += pnl;
-    account.availableMarginUSDT += releasedMargin + pnl;
-    account.totalEquityUSDT += pnl;
-    pos.size = Number((pos.size - closeSize).toFixed(10));
-    pos.margin = Number((pos.margin - releasedMargin).toFixed(8));
-    remaining = Number((remaining - closeSize).toFixed(10));
-    if (pos.size <= EPS) {
-      positions.splice(positions.indexOf(pos), 1);
-      pos = null;
-    }
-  }
-
-  if (remaining > EPS) {
-    const addMargin = (remaining * price) / lev;
-    account.availableMarginUSDT -= addMargin;
-    if (pos) {
-      const total = pos.size + remaining;
-      pos.entryPrice = (pos.entryPrice * pos.size + price * remaining) / total;
-      pos.size = Number(total.toFixed(10));
-      pos.margin = Number((pos.margin + addMargin).toFixed(8));
-      pos.leverage = lev;
-      pos.liquidationPrice = liquidationPrice(pos.side, pos.entryPrice, lev);
-      if (tpPrice) pos.tpPrice = tpPrice;
-      if (slPrice) pos.slPrice = slPrice;
-    } else {
-      positions.push({
-        id: uid('pos'),
-        accountId: account.id,
-        broker: account.broker,
-        symbol,
-        side: wantSide,
-        size: Number(remaining.toFixed(10)),
-        entryPrice: price,
-        markPrice: price,
-        liquidationPrice: liquidationPrice(wantSide, price, lev),
-        margin: Number(addMargin.toFixed(8)),
-        leverage: lev,
-        unrealizedPnl: 0,
-        pnlPercent: 0,
-        fundingSettledAt: fundingBoundary(Date.now()), // only positions held through a boundary pay funding
-        fundingPaidUSDT: 0,
-        tpPrice,
-        slPrice,
-      });
-    }
-  }
-  return realized;
+  return applySpotFill(account, { symbol, side, size, price, orderType: 'MARKET' }, price);
 }
 
 /** Spot fill: moves USDT and the base-asset holding (average-cost accounting). Returns realised PnL. */
@@ -237,7 +155,7 @@ function applySpotFill(account, order, price) {
 
 /**
  * Settle a fill for an order: marks it FILLED, writes the trade, charges the fee and
- * updates position/margin state (futures or leveraged orders only; spot balances are not tracked).
+ * updates spot balances.
  */
 export function settleOrderFill(account, order, fillPrice, feeRatePercent, meta = {}) {
   const value = fillPrice * order.size;
@@ -254,12 +172,7 @@ export function settleOrderFill(account, order, fillPrice, feeRatePercent, meta 
   account.availableMarginUSDT -= fee;
   account.totalEquityUSDT -= fee;
 
-  let realizedPnl;
-  if (opensPosition(account, order)) {
-    realizedPnl = applyToPosition(account, { ...order, price: fillPrice });
-  } else {
-    realizedPnl = applySpotFill(account, order, fillPrice);
-  }
+  const realizedPnl = applySpotFill(account, order, fillPrice);
   account.availableMarginUSDT = Number(account.availableMarginUSDT.toFixed(6));
   account.totalEquityUSDT = Number(account.totalEquityUSDT.toFixed(6));
   syncUsdtHolding(account);

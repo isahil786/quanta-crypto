@@ -35,7 +35,7 @@ export function mirrorFilledOrder(masterAccount, order, refPrice, ctx = {}) {
     const repOrder = {
       id: uid('ord-rep'), accountId: replicaAcc.id, broker: replicaAcc.broker, symbol, side,
       orderType: replicaOrderType, price: refPrice, size: replicaSize, filledSize: 0, status: 'OPEN',
-      timeInForce: 'GTC', leverage: Math.min(leverage, replicaAcc.broker === 'delta' ? 100 : 20),
+      timeInForce: 'GTC', leverage: 1,
       timestamp: new Date().toISOString(), fee: 0, notes: `Mirror of ${order.id}`,
     };
     // Replicas are taker orders: they slip with their own size, and are refused if that exceeds maxSlippagePercent

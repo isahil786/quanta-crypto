@@ -24,12 +24,10 @@ import {
   holdings,
   gttRules,
   mirrorConfig,
-  fundingLog,
 } from './server/state.js';
 import { uid, mask, isPositiveNumber } from './server/util.js';
 import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmounts } from './server/positions.js';
 import { feePct as feeFor, feeRates, executionCost, slippageConfig } from './server/costs.js';
-import { FUNDING_INTERVAL_MS, defaultFundingRate } from './server/funding.js';
 import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
 import { halalMarket, isHalalSymbol } from './server/halal.js';
 import {
@@ -151,8 +149,8 @@ app.post('/api/accounts', (req, res) => {
     if (!BROKERS[broker]) {
       return res.status(400).json({ error: `Unknown broker ${broker}` });
     }
-    if (!['SPOT', 'FUTURES'].includes(segment)) {
-      return res.status(400).json({ error: 'Segment must be SPOT or FUTURES' });
+    if (segment !== 'SPOT') {
+      return res.status(400).json({ error: 'Segment must be SPOT (spot trading only)' });
     }
 
     const newAccount = {
@@ -439,8 +437,8 @@ app.post('/api/orders', async (req, res) => {
     if (!VALID_SIDES.has(side)) return res.status(400).json({ error: 'side must be BUY or SELL' });
     if (!VALID_ORDER_TYPES.has(orderType)) return res.status(400).json({ error: 'orderType must be MARKET or LIMIT' });
     if (!isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
-    if (!Number.isFinite(leverage) || leverage < 1 || leverage > 125) {
-      return res.status(400).json({ error: 'leverage must be between 1 and 125' });
+    if (!Number.isFinite(leverage) || leverage !== 1) {
+      return res.status(400).json({ error: 'leverage must be 1 (spot trading only)' });
     }
     if (orderType === 'LIMIT' && !isPositiveNumber(req.body.price)) {
       return res.status(400).json({ error: 'A positive limit price is required for LIMIT orders' });
@@ -598,18 +596,12 @@ app.delete('/api/orders/:id', (req, res) => {
 // -------------------------------------------------------------
 // 5. Trades, Positions & Holdings (Updated against Live Rates)
 // -------------------------------------------------------------
-// Execution-cost model in force (fees per broker, slippage, funding) so the UI can show it
+// Execution-cost model in force (fees per broker, slippage) so the UI can show it
 app.get('/api/costs', (_req, res) => {
   res.json({
     fees: Object.fromEntries(Object.keys(BROKERS).map((b) => [b, feeRates(b)])),
     slippage: slippageConfig(),
-    funding: { intervalHours: FUNDING_INTERVAL_MS / 3600000, defaultRate: defaultFundingRate(), source: 'Binance USDT-M premium index when reachable, else default' },
   });
-});
-
-app.get('/api/funding', (_req, res) => {
-  const total = fundingLog.reduce((s, e) => s + e.paymentUSDT, 0);
-  res.json({ totalPaidUSDT: Number(total.toFixed(6)), events: fundingLog.slice(0, 200) });
 });
 
 app.get('/api/trades', (req, res) => {
@@ -873,6 +865,12 @@ app.post('/api/bots', async (req, res) => {
       leverage = 1,
       tpPrice,
       slPrice,
+      // DCA params
+      dcaIntervalSeconds,
+      dcaAmountPerInterval,
+      dcaTotalAmount,
+      // Time-based exit
+      timeExitHours,
       // Grid params
       lowerPrice,
       upperPrice,
@@ -887,18 +885,22 @@ app.post('/api/bots', async (req, res) => {
       maxInventory,
       stopLossPrice,
       takeProfitPrice,
+      // Risk management (spot only): drawdown, profit target, trailing stop
+      maxDailyDrawdownPercent,
+      dailyProfitTargetPercent,
+      trailingStopPercent,
     } = req.body;
 
     const account = accounts.find((a) => a.id === accountId);
     if (!account) {
       return res.status(404).json({ error: 'Target account not found' });
     }
-    // HALAL_ONLY=true forces every bot onto the halal list; otherwise the client can opt in per bot
-    if ((process.env.HALAL_ONLY === 'true' || halalOnly === true) && !isHalalSymbol(String(symbol || ''))) {
+    // HALAL_ONLY is always enforced — only halal-screened coins can be traded
+    if (!isHalalSymbol(String(symbol || ''))) {
       return res.status(400).json({ error: `${symbol} is not on the halal coin list` });
     }
-    if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT', 'QSL'].includes(type)) {
-      return res.status(400).json({ error: 'type must be TWAP_SLICER, BREAKOUT_CHASER, GRID_BOT or QSL' });
+    if (!['TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT', 'QSL', 'DCA_ACCUMULATOR'].includes(type)) {
+      return res.status(400).json({ error: 'type must be TWAP_SLICER, BREAKOUT_CHASER, GRID_BOT, QSL or DCA_ACCUMULATOR' });
     }
     if (!VALID_SIDES.has(String(side).toUpperCase())) {
       return res.status(400).json({ error: 'side must be BUY or SELL' });
@@ -930,6 +932,14 @@ app.post('/api/bots', async (req, res) => {
       }
       if (!isPositiveNumber(sizePerGrid)) {
         return res.status(400).json({ error: 'QSL needs a positive sizePerGrid' });
+      }
+    }
+    if (type === 'DCA_ACCUMULATOR') {
+      if (!(isPositiveNumber(dcaTotalAmount) && isPositiveNumber(dcaAmountPerInterval) && Number.isInteger(num(dcaIntervalSeconds)) && num(dcaIntervalSeconds) >= 60)) {
+        return res.status(400).json({ error: 'DCA needs positive dcaTotalAmount, dcaAmountPerInterval and integer dcaIntervalSeconds >= 60' });
+      }
+      if (Number(dcaAmountPerInterval) > Number(dcaTotalAmount)) {
+        return res.status(400).json({ error: 'DCA dcaAmountPerInterval cannot exceed dcaTotalAmount' });
       }
     }
 
@@ -971,6 +981,28 @@ app.post('/api/bots', async (req, res) => {
       if (isPositiveNumber(stopLossPrice)) riskLimits.stopLossPrice = Number(stopLossPrice);
       if (isPositiveNumber(takeProfitPrice)) riskLimits.takeProfitPrice = Number(takeProfitPrice);
     }
+    // Drawdown / profit target / trailing stop apply to all bot types
+    if (isPositiveNumber(maxDailyDrawdownPercent)) riskLimits.maxDailyDrawdownPercent = Number(maxDailyDrawdownPercent);
+    if (isPositiveNumber(dailyProfitTargetPercent)) riskLimits.dailyProfitTargetPercent = Number(dailyProfitTargetPercent);
+    if (isPositiveNumber(trailingStopPercent)) riskLimits.trailingStopPercent = Number(trailingStopPercent);
+
+    // Correlation filter: block concurrent bots on highly correlated pairs
+    const CORRELATION_GROUPS = [
+      ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT'],
+    ];
+    const baseSymbol = symbol.replace(/USDT$/, '');
+    const correlatedGroup = CORRELATION_GROUPS.find((g) => g.includes(symbol));
+    if (correlatedGroup) {
+      const conflicting = botsState.bots.some((b) =>
+        b.status === 'RUNNING' &&
+        b.accountId === accountId &&
+        correlatedGroup.includes(b.symbol) &&
+        b.id !== botId
+      );
+      if (conflicting) {
+        return res.status(400).json({ error: `Cannot run ${symbol} bot: a ${correlatedGroup.filter((s) => s !== symbol).join(', ')} bot is already running on this account (correlated pairs blocked)` });
+      }
+    }
 
     const botId = uid('bot');
     let newBot: any = {
@@ -1005,7 +1037,7 @@ app.post('/api/bots', async (req, res) => {
         ...newBot,
         triggerPrice: Number(triggerPrice),
         size: Number(size),
-        leverage: Math.min(Math.max(Number(leverage) || 1, 1), 125),
+        leverage: 1,
         tpPrice: tpPrice ? Number(tpPrice) : undefined,
         slPrice: slPrice ? Number(slPrice) : undefined,
       };
@@ -1093,6 +1125,30 @@ app.post('/api/bots', async (req, res) => {
       newBot.logs.unshift({
         time: new Date().toLocaleTimeString(),
         text: `QSL square ladder created: base #${newBot.baseNumber}, ${buyLevelsCount} Buy levels below $${livePrice}, ${sellLevelsCount} Sell levels above (seeded ${qslSeeded} ${symbol} @ $${livePrice}, size ${sizePerGrid} per level).`,
+      });
+    } else if (type === 'DCA_ACCUMULATOR') {
+      newBot = {
+        ...newBot,
+        totalSize: Number(dcaTotalAmount),
+        executedSize: 0,
+        intervalSeconds: Number(dcaIntervalSeconds),
+        amountPerInterval: Number(dcaAmountPerInterval),
+        nextExecutionTime: Date.now() + Number(dcaIntervalSeconds) * 1000,
+        averageExecPrice: livePrice,
+      };
+      newBot.logs.unshift({
+        time: new Date().toLocaleTimeString(),
+        text: `DCA accumulator created: buy $${Number(dcaAmountPerInterval)} ${symbol} every ${Number(dcaIntervalSeconds)}s until $${Number(dcaTotalAmount)} reached @ live mark $${livePrice}.`,
+      });
+    }
+
+    // Time-based exit: stop bot after N hours
+    if (isPositiveNumber(timeExitHours)) {
+      newBot.timeExitAt = Date.now() + Number(timeExitHours) * 60 * 60 * 1000;
+      newBot.timeExitHours = Number(timeExitHours);
+      newBot.logs.unshift({
+        time: new Date().toLocaleTimeString(),
+        text: `Time-based exit set: bot will stop after ${Number(timeExitHours)} hour(s) (at ${new Date(Date.now() + Number(timeExitHours) * 60 * 60 * 1000).toLocaleTimeString()}).`,
       });
     }
 

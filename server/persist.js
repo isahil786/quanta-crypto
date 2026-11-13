@@ -1,16 +1,17 @@
 // Optional state persistence: set STATE_FILE=/path/state.json to survive restarts.
 // API keys/secrets are never written to disk.
+// Pure spot trading — no futures, no leverage, no funding.
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
-import { accounts, orders, trades, positions, holdings, gttRules, mirrorConfig, fundingLog } from './state.js';
+import { accounts, orders, trades, positions, holdings, gttRules, mirrorConfig } from './state.js';
 import { botsState } from './bots.js';
 
-const ARRAYS = { accounts, orders, trades, positions, holdings, gttRules, fundingLog };
+const ARRAYS = { accounts, orders, trades, positions, holdings, gttRules };
 
 function snapshot() {
   return JSON.stringify({
     accounts: accounts.map(({ apiKey, apiSecret, ...rest }) => rest),
-    orders, trades, positions, holdings, gttRules, fundingLog,
+    orders, trades, positions, holdings, gttRules,
     mirrorConfig,
     bots: botsState.bots,
   });

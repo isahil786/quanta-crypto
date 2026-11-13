@@ -364,28 +364,4 @@ export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit =
   }
 }
 
-
-// ---- Funding rates (USDT-M perpetuals) ---------------------------------------------------------
-let fundingCache = { at: 0, rates: new Map() };
-/** symbol -> last funding rate (fraction per 8h). Empty map if the futures API is unreachable. */
-export async function getFundingRates(maxAgeMs = 5 * 60 * 1000) {
-  if (Date.now() - fundingCache.at < maxAgeMs && fundingCache.rates.size) return fundingCache.rates;
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch('https://fapi.binance.com/fapi/v1/premiumIndex', { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const rows = await res.json();
-    const rates = new Map();
-    for (const r of rows) {
-      const v = Number(r.lastFundingRate);
-      if (r.symbol && Number.isFinite(v)) rates.set(r.symbol, v);
-    }
-    if (rates.size) fundingCache = { at: Date.now(), rates };
-  } catch (e) {
-    console.error('Funding rate fetch failed (using default/last known rates):', e.message);
-    fundingCache.at = Date.now() - maxAgeMs + 60_000; // retry in a minute, not every cycle
-  }
-  return fundingCache.rates;
-}
+// No futures funding in spot-only mode

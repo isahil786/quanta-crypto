@@ -136,6 +136,16 @@ export default function AlgoBots({ accounts, tickers }) {
   const [maxInventory, setMaxInventory] = useState('');
   const [stopLossPrice, setStopLossPrice] = useState('');
   const [takeProfitPrice, setTakeProfitPrice] = useState('');
+  // Risk management: drawdown, profit target, trailing stop
+  const [maxDailyDrawdownPercent, setMaxDailyDrawdownPercent] = useState('');
+  const [dailyProfitTargetPercent, setDailyProfitTargetPercent] = useState('');
+  const [trailingStopPercent, setTrailingStopPercent] = useState('');
+  // DCA params
+  const [dcaIntervalSeconds, setDcaIntervalSeconds] = useState('3600');
+  const [dcaAmountPerInterval, setDcaAmountPerInterval] = useState('10');
+  const [dcaTotalAmount, setDcaTotalAmount] = useState('100');
+  // Time-based exit
+  const [timeExitHours, setTimeExitHours] = useState('');
 
   const fetchBots = async () => {
     try {
@@ -295,6 +305,18 @@ export default function AlgoBots({ accounts, tickers }) {
         if (stopLossPrice !== '') payload.stopLossPrice = Number(stopLossPrice);
         if (takeProfitPrice !== '') payload.takeProfitPrice = Number(takeProfitPrice);
       }
+      // Risk management: drawdown, profit target, trailing stop (all bot types)
+      if (maxDailyDrawdownPercent !== '') payload.maxDailyDrawdownPercent = Number(maxDailyDrawdownPercent);
+      if (dailyProfitTargetPercent !== '') payload.dailyProfitTargetPercent = Number(dailyProfitTargetPercent);
+      if (trailingStopPercent !== '') payload.trailingStopPercent = Number(trailingStopPercent);
+      // DCA params
+      if (botType === 'DCA_ACCUMULATOR') {
+        payload.dcaIntervalSeconds = Number(dcaIntervalSeconds);
+        payload.dcaAmountPerInterval = Number(dcaAmountPerInterval);
+        payload.dcaTotalAmount = Number(dcaTotalAmount);
+      }
+      // Time-based exit (all bot types)
+      if (timeExitHours !== '') payload.timeExitHours = Number(timeExitHours);
 
       const res = await fetch('/api/bots', {
         method: 'POST',
@@ -972,6 +994,17 @@ export default function AlgoBots({ accounts, tickers }) {
                   >
                     Quant Square Levels
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setBotType('DCA_ACCUMULATOR')}
+                    className={`py-2 px-2 text-xs font-semibold rounded-lg border text-center transition-colors ${
+                      botType === 'DCA_ACCUMULATOR'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40 shadow-sm'
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    DCA Accumulator
+                  </button>
                 </div>
               </div>
 
@@ -1340,6 +1373,82 @@ export default function AlgoBots({ accounts, tickers }) {
                   </p>
                 </div>
               )}
+
+              {/* Risk management: drawdown, profit target, trailing stop (all bot types) */}
+              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-200">Risk Management <span className="font-normal text-slate-500">(optional)</span></span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-400">Max Daily Drawdown (%)</label>
+                    <input type="number" step="any" min="0" value={maxDailyDrawdownPercent} onChange={(e) => setMaxDailyDrawdownPercent(e.target.value)} placeholder="e.g. 5"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-rose-300 mt-1 placeholder:text-slate-600" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400">Daily Profit Target (%)</label>
+                    <input type="number" step="any" min="0" value={dailyProfitTargetPercent} onChange={(e) => setDailyProfitTargetPercent(e.target.value)} placeholder="e.g. 10"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-emerald-300 mt-1 placeholder:text-slate-600" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400">Trailing Stop (%)</label>
+                    <input type="number" step="any" min="0" value={trailingStopPercent} onChange={(e) => setTrailingStopPercent(e.target.value)} placeholder="e.g. 3"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-purple-300 mt-1 placeholder:text-slate-600" />
+                  </div>
+                </div>
+                <p className="text-[10px] leading-snug text-slate-500">
+                  Drawdown pauses the bot if equity drops X% from its 24h high. Profit target stops the bot when realized PnL hits X%.
+                  Trailing stop sells all and stops if price drops X% from its peak since entry.
+                </p>
+              </div>
+
+              {/* DCA Accumulator params */}
+              {botType === 'DCA_ACCUMULATOR' && (
+                <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-200">DCA Accumulator</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-400">Interval (seconds)</label>
+                      <input type="number" step="1" min="60" value={dcaIntervalSeconds} onChange={(e) => setDcaIntervalSeconds(e.target.value)} placeholder="3600"
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-emerald-300 mt-1 placeholder:text-slate-600" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Amount per interval (USDT)</label>
+                      <input type="number" step="any" min="0" value={dcaAmountPerInterval} onChange={(e) => setDcaAmountPerInterval(e.target.value)} placeholder="10"
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-emerald-300 mt-1 placeholder:text-slate-600" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Total amount (USDT)</label>
+                      <input type="number" step="any" min="0" value={dcaTotalAmount} onChange={(e) => setDcaTotalAmount(e.target.value)} placeholder="100"
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-emerald-300 mt-1 placeholder:text-slate-600" />
+                    </div>
+                  </div>
+                  <p className="text-[10px] leading-snug text-slate-500">
+                    Buys a fixed USDT amount of the asset every N seconds until the total amount is reached.
+                    Works with any halal spot pair; small intervals build position gradually.
+                  </p>
+                </div>
+              )}
+
+              {/* Time-based exit (all bot types) */}
+              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-400">Time-based Exit (hours)</label>
+                    <input type="number" step="any" min="0" value={timeExitHours} onChange={(e) => setTimeExitHours(e.target.value)} placeholder="off"
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-purple-300 mt-1 placeholder:text-slate-600" />
+                  </div>
+                  <div className="flex items-end">
+                    <span className="text-[10px] text-slate-500">Stop bot after N hours</span>
+                  </div>
+                </div>
+                <p className="text-[10px] leading-snug text-slate-500">
+                  Time-based exit closes the bot after the configured hours regardless of PnL.
+                  Useful for avoiding overnight exposure or weekend risk.
+                </p>
+              </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800 mt-2">
                 <button

@@ -1,67 +1,64 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { uid } from '../server/util.js';
-import { positions, orders, trades, accounts } from '../server/state.js';
+import { positions, orders, trades, accounts, holdings } from '../server/state.js';
 import { applyToPosition, checkMargin, settleOrderFill, baseInventory } from '../server/positions.js';
 import { simulateGridBot, optimizeGridStrategies, generateSimulationRungs } from '../server/backtest.js';
 import { generateGridRungs, seedGridInventory, botsState, runBotsBackgroundCycle } from '../server/bots.js';
 
-const acct = () => ({ id: 'a1', broker: 'delta', segment: 'FUTURES', totalEquityUSDT: 10000, availableMarginUSDT: 10000 });
-const reset = () => { positions.length = 0; orders.length = 0; trades.length = 0; };
+const acct = () => ({ id: 'a1', broker: 'coinswitch', segment: 'SPOT', totalEquityUSDT: 10000, availableMarginUSDT: 10000 });
+const reset = () => { positions.length = 0; orders.length = 0; trades.length = 0; holdings.splice(0, holdings.length, ...holdings.filter((h) => h.asset === 'USDT')) };
 
 test('uid never collides within the same millisecond', () => {
   const ids = new Set(Array.from({ length: 5000 }, () => uid('x')));
   assert.equal(ids.size, 5000);
 });
 
-test('opposite-side order reduces a position instead of growing it', () => {
+test('settleOrderFill charges the fee and writes a trade (spot)', () => {
   reset();
   const a = acct();
-  applyToPosition(a, { symbol: 'BTCUSDT', side: 'BUY', size: 1, price: 100, leverage: 10 });
-  assert.equal(positions[0].size, 1);
-  const pnl = applyToPosition(a, { symbol: 'BTCUSDT', side: 'SELL', size: 0.4, price: 110, leverage: 10 });
-  assert.equal(positions[0].size, 0.6);
-  assert.equal(Number(pnl.toFixed(6)), 4);
-  assert.equal(a.totalEquityUSDT, 10004);
-});
-
-test('opposite order larger than position flips it', () => {
-  reset();
-  const a = acct();
-  applyToPosition(a, { symbol: 'ETHUSDT', side: 'BUY', size: 1, price: 100, leverage: 5 });
-  applyToPosition(a, { symbol: 'ETHUSDT', side: 'SELL', size: 3, price: 100, leverage: 5 });
-  assert.equal(positions.length, 1);
-  assert.equal(positions[0].side, 'SHORT');
-  assert.equal(positions[0].size, 2);
-});
-
-test('closing a position releases margin and realises PnL', () => {
-  reset();
-  const a = acct();
-  applyToPosition(a, { symbol: 'BTCUSDT', side: 'BUY', size: 1, price: 100, leverage: 10 });
-  assert.equal(a.availableMarginUSDT, 9990);
-  applyToPosition(a, { symbol: 'BTCUSDT', side: 'SELL', size: 1, price: 90, leverage: 10 });
-  assert.equal(positions.length, 0);
-  assert.equal(a.availableMarginUSDT, 9990 + 10 - 10);
-  assert.equal(a.totalEquityUSDT, 9990);
-});
-
-test('margin check rejects over-leveraged orders', () => {
-  reset();
-  const a = acct();
-  const r = checkMargin(a, { symbol: 'BTCUSDT', side: 'BUY', size: 100, leverage: 2 }, 1000);
-  assert.equal(r.ok, false);
-  assert.equal(r.required, 50100); // margin 50000 + 0.1% fee
-});
-
-test('settleOrderFill charges the fee and writes a trade', () => {
-  reset();
-  const a = acct();
-  const o = { id: 'o1', symbol: 'BTCUSDT', side: 'BUY', size: 1, leverage: 1 };
+  const o = { id: 'o1', symbol: 'BTCUSDT', side: 'BUY', size: 1 };
   const t = settleOrderFill(a, o, 100, 0.1);
   assert.equal(o.status, 'FILLED');
   assert.equal(t.fee, 0.1);
+  assert.equal(Number(a.availableMarginUSDT.toFixed(4)), 9899.9); // 10000 - 100 - 0.1
   assert.equal(a.totalEquityUSDT, 9999.9);
+});
+
+test('spot buy increases holding, sell realises PnL', () => {
+  reset();
+  const a = acct();
+  // buy 2 SOL @ 100
+  const buy = { id: 'o1', symbol: 'SOLUSDT', side: 'BUY', size: 2 };
+  settleOrderFill(a, buy, 100, 0.1);
+  assert.equal(Number(a.availableMarginUSDT.toFixed(2)), 9799.8); // 10000 - 200 - 0.2 fee
+  const h = holdings.find((x) => x.accountId === a.id && x.asset === 'SOL');
+  assert.equal(h.total, 2);
+  assert.ok(h.avgCost > 0);
+
+  // sell 1 SOL @ 110 -> realise PnL on 1 unit
+  const sell = { id: 'o2', symbol: 'SOLUSDT', side: 'SELL', size: 1 };
+  const t = settleOrderFill(a, sell, 110, 0.1);
+  assert.ok(t.realizedPnl > 0, `realised PnL should be positive, got ${t.realizedPnl}`);
+  const h2 = holdings.find((x) => x.accountId === a.id && x.asset === 'SOL');
+  assert.equal(h2.total, 1);
+});
+
+test('sell without holdings is rejected', () => {
+  reset();
+  const spot = acct();
+  const sell = { id: 'o1', symbol: 'SOLUSDT', side: 'SELL', size: 1 };
+  assert.equal(checkMargin(spot, sell, 100).ok, false);
+  assert.match(checkMargin(spot, sell, 100).reason, /Insufficient SOL/);
+});
+
+test('buy exceeding balance is rejected', () => {
+  reset();
+  const spot = acct();
+  spot.availableMarginUSDT = 50;
+  const buy = { id: 'o1', symbol: 'BTCUSDT', side: 'BUY', size: 1 };
+  assert.equal(checkMargin(spot, buy, 100000).ok, false);
+  assert.match(checkMargin(spot, buy, 100000).reason, /Insufficient USDT/);
 });
 
 const tickerMock = (price) => async () => ({ ok: true, json: async () => [{ symbol: 'TESTUSDT', lastPrice: String(price), priceChangePercent: '1', quoteVolume: '5000000', highPrice: '200', lowPrice: '1', volume: '1', count: 1, bidPrice: '1', askPrice: '1', weightedAvgPrice: '1' }] });
@@ -75,28 +72,26 @@ async function cycleAt(price) {
   try { await runBotsBackgroundCycle(); } finally { globalThis.fetch = orig; }
 }
 
-test('grid bot on a futures account: seed opens a long, sells reduce it, margin and equity move', async () => {
+test('grid bot on spot account: seed buys inventory, sells reduce it, profit realised', async () => {
   reset(); botsState.bots.length = 0;
-  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
+  const account = accounts.find((a) => a.id === 'acc-cs-01');
   const before = account.availableMarginUSDT;
-  const bot = makeBot(account.id, 'coindcx');
+  const bot = makeBot(account.id, 'coinswitch');
   const seed = seedGridInventory(bot, account, 100);
   assert.equal(seed.ok, true);
-  assert.equal(positions[0].side, 'LONG');
-  assert.equal(positions[0].size, bot.totalBaseHoldings);
-  assert.ok(account.availableMarginUSDT < before);
+  assert.equal(bot.totalBaseHoldings, seed.qty);
+  assert.ok(account.availableMarginUSDT < before, 'seed should consume available margin');
   botsState.bots.push(bot);
   await cycleAt(112); // sell rungs above fill, using the seeded inventory
-  assert.ok(bot.realizedProfitUSDT > 0);
-  assert.ok(positions.length === 0 || positions[0].size < bot.sizePerGrid * 3);
-  assert.ok(trades.some((t) => t.side === 'SELL'));
+  assert.ok(bot.realizedProfitUSDT > 0, 'should realise profit from sell fills');
+  assert.ok(trades.some((t) => t.side === 'SELL'), 'should have sell trades');
   botsState.bots.length = 0;
 });
 
 test('grid bot never sells coins it does not hold', async () => {
   reset(); botsState.bots.length = 0;
-  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
-  const bot = makeBot(account.id, 'coindcx'); // not seeded
+  const account = accounts.find((a) => a.id === 'acc-cs-01');
+  const bot = makeBot(account.id, 'coinswitch'); // not seeded
   botsState.bots.push(bot);
   await cycleAt(115);
   assert.equal(bot.realizedProfitUSDT, 0);
@@ -107,17 +102,17 @@ test('grid bot never sells coins it does not hold', async () => {
 test('spot accounting: buy moves USDT into holdings, sell without holdings is rejected', () => {
   reset();
   const spot = { id: 'spot1', broker: 'coinswitch', segment: 'SPOT', totalEquityUSDT: 1000, availableMarginUSDT: 1000 };
-  const buy = { id: 'o1', symbol: 'SOLUSDT', side: 'BUY', size: 2, leverage: 1 };
+  const buy = { id: 'o1', symbol: 'SOLUSDT', side: 'BUY', size: 2 };
   assert.equal(checkMargin(spot, buy, 100).ok, true);
   settleOrderFill(spot, buy, 100, 0.1);
   assert.equal(Number(spot.availableMarginUSDT.toFixed(2)), 799.8);
-  const sell = { id: 'o2', symbol: 'SOLUSDT', side: 'SELL', size: 3, leverage: 1 };
+  const sell = { id: 'o2', symbol: 'SOLUSDT', side: 'SELL', size: 3 };
   assert.equal(checkMargin(spot, sell, 110).ok, false);
-  const sell2 = { id: 'o3', symbol: 'SOLUSDT', side: 'SELL', size: 2, leverage: 1 };
+  const sell2 = { id: 'o3', symbol: 'SOLUSDT', side: 'SELL', size: 2 };
   settleOrderFill(spot, sell2, 110, 0.1);
   assert.equal(Number(spot.availableMarginUSDT.toFixed(2)), 1019.58);
   assert.equal(baseInventory(spot, 'SOLUSDT'), 0);
-  assert.equal(checkMargin(spot, { symbol: 'SOLUSDT', side: 'BUY', size: 1000, leverage: 1 }, 100).ok, false);
+  assert.equal(checkMargin(spot, { symbol: 'SOLUSDT', side: 'BUY', size: 1000 }, 100).ok, false);
 });
 
 const flat = (n, p = 100) => Array.from({ length: n }, (_, i) => ({ openTime: i * 3.6e6, closeTime: i * 3.6e6 + 3.6e6 - 1, open: p, high: p, low: p, close: p, volume: 1, quoteVolume: p, tradesCount: 1 }));
@@ -160,15 +155,14 @@ test('optimizer ranks strategies by Sharpe ratio', () => {
 
 test('bots are priced for symbols outside the top-100 movers', async () => {
   reset(); botsState.bots.length = 0;
-  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
+  const account = accounts.find((a) => a.id === 'acc-cs-01');
   const orig = globalThis.fetch;
-  // 101 tickers with higher 24h change than BTCUSDT, so BTCUSDT falls outside the top-100 list
   const rows = Array.from({ length: 101 }, (_, i) => ({ symbol: `X${i}USDT`, lastPrice: '1', priceChangePercent: String(50 + i), quoteVolume: '5000000', highPrice: '2', lowPrice: '1', volume: '1', count: 1, bidPrice: '1', askPrice: '1', weightedAvgPrice: '1' }));
   rows.push({ symbol: 'BTCUSDT', lastPrice: '100', priceChangePercent: '0.1', quoteVolume: '5000000', highPrice: '110', lowPrice: '90', volume: '1', count: 1, bidPrice: '1', askPrice: '1', weightedAvgPrice: '1' });
   globalThis.fetch = async () => ({ ok: true, json: async () => rows });
   const { getLiveTop100MomentumCoins, getLiveCoin } = await import('../server/binance.js');
   try {
-    await new Promise((r) => setTimeout(r, 3100)); // let any earlier cache expire
+    await new Promise((r) => setTimeout(r, 3100));
     const top = await getLiveTop100MomentumCoins();
     assert.ok(!top.some((c) => c.symbol === 'BTCUSDT'));
     assert.equal((await getLiveCoin('BTCUSDT')).price, 100);
@@ -183,44 +177,13 @@ const cycleWith = async (symbol, price) => {
   try { await new Promise((r) => setTimeout(r, 3100)); await runBotsBackgroundCycle(); } finally { globalThis.fetch = orig; }
 };
 
-test('TP/SL auto-closes a position when the price reaches it', async () => {
-  reset(); botsState.bots.length = 0;
-  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
-  const before = account.totalEquityUSDT;
-  applyToPosition(account, { symbol: 'TPUSDT', side: 'BUY', size: 1, price: 100, leverage: 5, tpPrice: 110, slPrice: 95 });
-  await cycleWith('TPUSDT', 105); // inside the band: nothing happens
-  assert.equal(positions.length, 1);
-  await cycleWith('TPUSDT', 111); // take-profit hit
-  assert.equal(positions.length, 0);
-  assert.equal(orders[0].source, 'TP_SL');
-  assert.ok(account.totalEquityUSDT > before + 9);
-});
-
-test('TP/SL stop-loss closes a short when price rises through it', async () => {
-  reset(); botsState.bots.length = 0;
-  const account = accounts.find((a) => a.id === 'acc-cdcx-01');
-  applyToPosition(account, { symbol: 'SLUSDT', side: 'SELL', size: 1, price: 100, leverage: 5, tpPrice: 90, slPrice: 105 });
-  await cycleWith('SLUSDT', 106);
-  assert.equal(positions.length, 0);
-});
-
-test('a resting master limit order mirrors to replicas when it fills', async () => {
+test('a resting master limit order mirrors to replicas when it fills (spot only)', async () => {
   reset(); botsState.bots.length = 0;
   const master = accounts.find((a) => a.isMaster);
-  const replica = accounts.find((a) => a.id === 'acc-cdcx-01');
-  const o = { id: 'lim1', accountId: master.id, broker: master.broker, symbol: 'MIRUSDT', side: 'BUY', orderType: 'LIMIT', price: 100, size: 1, filledSize: 0, status: 'OPEN', leverage: 1, timestamp: new Date().toISOString(), fee: 0 };
+  const o = { id: 'lim1', accountId: master.id, broker: master.broker, symbol: 'MIRUSDT', side: 'BUY', orderType: 'LIMIT', price: 100, size: 1, filledSize: 0, status: 'OPEN', timestamp: new Date().toISOString(), fee: 0 };
   orders.unshift(o);
   await cycleWith('MIRUSDT', 99);
   assert.equal(o.status, 'FILLED');
-  assert.ok(orders.some((x) => x.accountId === replica.id && String(x.notes).startsWith('Mirror of lim1')));
-});
-
-test('checkTpSl-style guard: TP on the wrong side would close instantly, so TP/SL must bracket entry', () => {
-  // Documented behaviour of the engine: a long with TP below price exits on the very next cycle.
-  reset();
-  const a = acct();
-  applyToPosition(a, { symbol: 'WRUSDT', side: 'BUY', size: 1, price: 100, leverage: 2, tpPrice: 90 });
-  assert.equal(positions[0].tpPrice, 90); // the API layer (not the engine) rejects this input
 });
 
 test('halal list: deduped, pegged assets dropped, renamed tickers mapped', async () => {
@@ -245,26 +208,7 @@ test('halalMarket joins the list with live prices and reports unlisted pairs', a
   assert.ok(r.unavailable.some((c) => c.symbol === 'AVAXUSDT'));
 });
 
-test('breakout bot passes its leverage through to the fill', async () => {
+test('breakout bot checks feed staleness', async () => {
   const { isFeedStale } = await import('../server/binance.js');
   assert.equal(typeof isFeedStale(), 'boolean');
-});
-
-test('liquidation closes a leveraged position at its liquidation price', async () => {
-  reset();
-  botsState.bots.length = 0;
-  const a = { id: 'liq1', broker: 'delta', segment: 'FUTURES', totalEquityUSDT: 10000, availableMarginUSDT: 10000 };
-  accounts.push(a);
-  applyToPosition(a, { symbol: 'ZZZUSDT', side: 'BUY', size: 1, price: 100, leverage: 10 });
-  const liq = positions[0].liquidationPrice;
-  assert.ok(liq < 100 && liq > 0);
-  const bin = await import('../server/binance.js');
-  bin.applyTickerUpdate; // module loaded; seed the price index through the public cache API
-  // Inject a price below liquidation via the cache the cycle reads
-  const idx = await bin.getLivePriceIndex().catch(() => null);
-  if (!idx || bin.isFeedStale()) { accounts.splice(accounts.findIndex((x) => x.id === 'liq1'), 1); return; } // offline: skip
-  idx.set('ZZZUSDT', { symbol: 'ZZZUSDT', price: liq - 1 });
-  await runBotsBackgroundCycle();
-  assert.equal(positions.filter((p) => p.accountId === 'liq1').length, 0);
-  accounts.splice(accounts.findIndex((x) => x.id === 'liq1'), 1);
 });

@@ -2,9 +2,8 @@
 // Advanced Volatility Grid, TWAP Micro-Slicer, and Momentum Breakout Radar
 // Synchronized with live Binance Public API v3 market data
 
-import { getLivePriceIndex, isFeedStale, getFundingRates } from './binance.js';
+import { getLivePriceIndex, isFeedStale } from './binance.js';
 import { feePct as feeFor, executionCost } from './costs.js';
-import { settleFunding, fundingDue, defaultFundingRate } from './funding.js';
 import { orders, trades, gttRules, accounts, positions } from './state.js';
 import { BROKERS } from './brokers/index.js';
 import { checkMargin, settleOrderFill, baseInventory, releaseOrder } from './positions.js';
@@ -268,6 +267,74 @@ function checkExit(bot, account, livePrice) {
   return true;
 }
 
+// ---------- Risk management: drawdown, profit target, trailing stop ----------
+
+// Track 24h equity high per account for daily drawdown checks
+const equityHigh = new Map(); // accountId -> { high: number, resetAt: number }
+
+function accountEquity(account) {
+  return Number(account.totalEquityUSDT || account.availableMarginUSDT || 0);
+}
+
+/** Returns true if the account should be paused due to max daily drawdown. Resets the high-water mark every 24h. */
+export function checkDailyDrawdown(account, maxDrawdownPercent) {
+  const now = Date.now();
+  const state = equityHigh.get(account.id) || { high: accountEquity(account), resetAt: now + 24 * 60 * 60 * 1000 };
+  if (now > state.resetAt) { state.high = accountEquity(account); state.resetAt = now + 24 * 60 * 60 * 1000; }
+  const current = accountEquity(account);
+  if (current > state.high) state.high = current;
+  equityHigh.set(account.id, state);
+  const drawdownPct = ((state.high - current) / state.high) * 100;
+  return drawdownPct >= maxDrawdownPercent
+    ? { paused: true, reason: `Daily drawdown ${drawdownPct.toFixed(2)}% >= limit ${maxDrawdownPercent}%` }
+    : { paused: false, drawdownPct };
+}
+
+/** Returns true if the bot should stop because realized PnL % hit the daily profit target. */
+export function checkDailyProfitTarget(bot, entryPrice) {
+  const target = Number(bot.dailyProfitTargetPercent);
+  if (!target || target <= 0) return { stopped: false };
+  const held = bot.totalBaseHoldings || 0;
+  const entry = entryPrice || bot.initialPrice || 0;
+  const currentValue = held * (bot.currentPrice || entry);
+  const cost = bot.inventoryCostUSDT || (entry * held);
+  const realized = bot.realizedProfitUSDT || 0;
+  const totalPnL = realized + Math.max(currentValue - cost, 0);
+  const pnlPct = cost > 0 ? (totalPnL / cost) * 100 : 0;
+  return pnlPct >= target
+    ? { stopped: true, reason: `Daily profit target ${pnlPct.toFixed(2)}% >= ${target}%` }
+    : { stopped: false, pnlPct };
+}
+
+/** Returns true if the bot should exit due to trailing stop (price dropped X% from peak since entry). */
+export function checkTrailingStop(bot, account, livePrice) {
+  const trail = Number(bot.trailingStopPercent);
+  if (!trail || trail <= 0) return { exited: false };
+  const held = bot.totalBaseHoldings || 0;
+  if (held <= 0) return { exited: false };
+  // Track peak price since bot start / last reset
+  if (!bot._peakPrice || livePrice > bot._peakPrice) bot._peakPrice = livePrice;
+  const peak = bot._peakPrice;
+  const dropPct = ((peak - livePrice) / peak) * 100;
+  if (dropPct >= trail) {
+    const qty = Number(Math.min(held, baseInventory(account, bot.symbol)).toFixed(8));
+    if (qty > 0) {
+      const res = executeFill({ bot, side: 'SELL', price: livePrice, size: qty, orderType: bot.broker === 'coinswitch' ? 'LIMIT' : 'MARKET', timeInForce: 'IOC', tag: 'trailing-stop' });
+      if (!res.ok) { logRejection(bot, 'trailing', `trailing stop reached but the exit order was rejected: ${res.reason}`); return { exited: false }; }
+      bookSell(bot, qty, bot.totalBaseHoldings || 0);
+      bot.totalBaseHoldings = Number(((bot.totalBaseHoldings || 0) - qty).toFixed(8));
+      const realizedPnl = res.trade?.realizedPnl ?? 0;
+      bot.exitPnlUSDT = Number(((bot.exitPnlUSDT || 0) + realizedPnl).toFixed(4));
+    }
+    bot.status = 'STOPPED_OUT';
+    bot.stopReason = 'TRAILING_STOP';
+    markUnrealised(bot, livePrice);
+    log(bot, `Trailing stop triggered: price dropped ${dropPct.toFixed(2)}% from peak $${peak.toLocaleString()}. Sold ${qty} ${bot.symbol} @ $${livePrice.toLocaleString()}.`);
+    return { exited: true };
+  }
+  return { exited: false, dropPct };
+}
+
 // Latest price index of the running cycle: gives executeFill the 24h volume that drives slippage
 let liveIndex = null;
 const volumeOf = (symbol) => liveIndex?.get(symbol)?.quoteVolume;
@@ -291,15 +358,14 @@ function settleAndRecord(account, order, price, feePct, meta) {
  * Execute a simulated fill through the same accounting as manual orders
  * (margin / balances, positions, fees, trade book). Returns { ok, order, trade } or { ok:false, reason }.
  */
-function executeFill({ bot, side, price, size, orderType = 'LIMIT', timeInForce = 'GTC', leverage = 1, tpPrice, slPrice, tag, liquidity = 'TAKER' }) {
+function executeFill({ bot, side, price, size, orderType = 'LIMIT', timeInForce = 'GTC', tag, liquidity = 'TAKER' }) {
   const account = accounts.find((a) => a.id === bot.accountId);
   if (!account) return { ok: false, reason: 'Account no longer exists' };
   // MAKER (grid/QSL rungs): fills at the rung price, maker fee. TAKER (market-style): slips against us, taker fee.
   const ex = executionCost({ broker: bot.broker, side, refPrice: price, size, quoteVolume: volumeOf(bot.symbol), liquidity });
   const order = {
     id: uid(`ord-${tag}`), accountId: account.id, broker: bot.broker, symbol: bot.symbol, side, orderType,
-    price, size, filledSize: 0, status: 'OPEN', timeInForce, leverage, tpPrice, slPrice,
-    timestamp: new Date().toISOString(), fee: 0, source: 'BOT', botId: bot.id,
+    price, size, filledSize: 0, status: 'OPEN', timeInForce, timestamp: new Date().toISOString(), fee: 0, source: 'BOT', botId: bot.id,
   };
   return settleAndRecord(account, order, ex.price, ex.feePct, { liquidity, slippagePct: ex.slippagePct, refPrice: price });
 }
@@ -340,6 +406,23 @@ function runTwap(bot, livePrice, now) {
   // The last slice takes whatever is left so rounding never causes an extra (N+1th) slice
   const finalSliceSize = bot.completedSlices >= bot.slicesCount - 1 ? remaining : Math.min(remaining, sliceSize);
 
+  // Risk management: daily drawdown pauses the bot; profit target or trailing stop exits it
+  const account = accounts.find((a) => a.id === bot.accountId);
+  if (account) {
+    if (bot.maxDailyDrawdownPercent) {
+      const dd = checkDailyDrawdown(account, bot.maxDailyDrawdownPercent);
+      if (dd.paused) { bot.status = 'PAUSED'; bot.stopReason = dd.reason; log(bot, `Paused: ${dd.reason}`); return; }
+    }
+    if (bot.dailyProfitTargetPercent) {
+      const pt = checkDailyProfitTarget(bot, livePrice);
+      if (pt.stopped) { bot.status = 'STOPPED_OUT'; bot.stopReason = pt.reason; log(bot, `Stopped: ${pt.reason}`); return; }
+    }
+    if (bot.trailingStopPercent) {
+      const ts = checkTrailingStop(bot, account, livePrice);
+      if (ts.exited) return;
+    }
+  }
+
   const res = executeFill({ bot, side: bot.side, price: livePrice, size: finalSliceSize, orderType: bot.broker === 'coinswitch' ? 'LIMIT' : 'MARKET', timeInForce: 'IOC', tag: 'bot' });
   bot.nextExecutionTime = now + bot.intervalSeconds * 1000;
   if (!res.ok) {
@@ -370,9 +453,23 @@ function runBreakout(bot, livePrice) {
   // BUY: breakout up through the trigger. SELL: breakdown through the trigger.
   const hit = bot.side === 'SELL' ? livePrice <= bot.triggerPrice : livePrice >= bot.triggerPrice;
   if (!hit) return;
+
+  // Risk management: daily drawdown pauses the bot; profit target or trailing stop exits it
+  const account = accounts.find((a) => a.id === bot.accountId);
+  if (account) {
+    if (bot.maxDailyDrawdownPercent) {
+      const dd = checkDailyDrawdown(account, bot.maxDailyDrawdownPercent);
+      if (dd.paused) { bot.status = 'PAUSED'; bot.stopReason = dd.reason; log(bot, `Paused: ${dd.reason}`); return; }
+    }
+    if (bot.trailingStopPercent) {
+      const ts = checkTrailingStop(bot, account, livePrice);
+      if (ts.exited) return;
+    }
+  }
+
   const res = executeFill({
-    bot, side: bot.side, price: livePrice, size: bot.size, leverage: bot.leverage || 1,
-    orderType: bot.broker === 'coinswitch' ? 'LIMIT' : 'MARKET', tpPrice: bot.tpPrice, slPrice: bot.slPrice, tag: 'breakout',
+    bot, side: bot.side, price: livePrice, size: bot.size,
+    orderType: bot.broker === 'coinswitch' ? 'LIMIT' : 'MARKET', tag: 'breakout',
   });
   if (!res.ok) {
     bot.status = 'ERROR';
@@ -380,7 +477,60 @@ function runBreakout(bot, livePrice) {
     return;
   }
   bot.status = 'COMPLETED';
-  log(bot, `BREAKOUT CONFIRMED: $${livePrice} crossed trigger $${bot.triggerPrice}. Filled #${res.order.id}. TP/SL are attached to the resulting position and auto-close it when reached (futures/leveraged accounts only).`);
+  log(bot, `BREAKOUT CONFIRMED: $${livePrice} crossed trigger $${bot.triggerPrice}. Filled #${res.order.id}. Spot trade executed.`);
+}
+
+/** DCA Accumulator: buy a fixed USDT amount at fixed intervals until totalSize is reached. */
+function runDCA(bot, livePrice, now) {
+  if (now < bot.nextExecutionTime) return;
+  const remaining = Number((bot.totalSize - bot.executedSize).toFixed(8));
+  if (remaining <= 0) {
+    bot.status = 'COMPLETED';
+    log(bot, `DCA accumulator completed: ${bot.executedSize.toFixed(8)} ${bot.symbol} at avg price $${bot.averageExecPrice}.`);
+    return;
+  }
+
+  // Risk management: daily drawdown pauses the bot; profit target exits it
+  const account = accounts.find((a) => a.id === bot.accountId);
+  if (account) {
+    if (bot.maxDailyDrawdownPercent) {
+      const dd = checkDailyDrawdown(account, bot.maxDailyDrawdownPercent);
+      if (dd.paused) { bot.status = 'PAUSED'; bot.stopReason = dd.reason; log(bot, `Paused: ${dd.reason}`); return; }
+    }
+    if (bot.dailyProfitTargetPercent) {
+      const pt = checkDailyProfitTarget(bot, livePrice);
+      if (pt.stopped) { bot.status = 'STOPPED_OUT'; bot.stopReason = pt.reason; log(bot, `Stopped: ${pt.reason}`); return; }
+    }
+  }
+
+  const amountThisInterval = Math.min(Number(bot.amountPerInterval), remaining);
+  const size = Number((amountThisInterval / livePrice).toFixed(8));
+  if (size <= 0) {
+    bot.status = 'ERROR';
+    log(bot, `DCA accumulator halted: size rounded to zero at price $${livePrice}.`);
+    return;
+  }
+
+  const res = executeFill({ bot, side: 'BUY', price: livePrice, size, orderType: 'MARKET', tag: 'dca' });
+  bot.nextExecutionTime = now + bot.intervalSeconds * 1000;
+  if (!res.ok) {
+    logRejection(bot, 'dca', res.reason);
+    bot.failStreak = (bot.failStreak || 0) + 1;
+    if (bot.failStreak >= 5) {
+      bot.status = 'ERROR';
+      log(bot, `DCA halted after ${bot.failStreak} consecutive rejected buys: ${res.reason}`);
+    }
+    return;
+  }
+  bot.failStreak = 0;
+  bot.executedSize = Number((bot.executedSize + size).toFixed(8));
+  const prevNotional = (bot.averageExecPrice || livePrice) * (bot.executedSize - size);
+  bot.averageExecPrice = Number(((prevNotional + livePrice * size) / bot.executedSize).toFixed(8));
+  log(bot, `DCA buy #${Math.round(bot.executedSize / size)}: ${size} ${bot.symbol} @ $${livePrice.toLocaleString()} (spent $${amountThisInterval.toFixed(2)}, remaining $${remaining.toFixed(2)})`);
+  if (bot.executedSize >= bot.totalSize) {
+    bot.status = 'COMPLETED';
+    log(bot, `DCA accumulator completed: ${bot.executedSize.toFixed(8)} ${bot.symbol} at avg price $${bot.averageExecPrice}.`);
+  }
 }
 
 function runGrid(bot, livePrice) {
@@ -393,6 +543,21 @@ function runGrid(bot, livePrice) {
   const feeFrac = feeFor(bot.broker, 'MAKER') / 100; // rung fills are resting limit orders
   bot.currentPrice = livePrice;
   if (checkExit(bot, account, livePrice)) return;
+
+  // Risk management: daily drawdown pauses the bot; profit target or trailing stop exits it
+  if (bot.maxDailyDrawdownPercent) {
+    const dd = checkDailyDrawdown(account, bot.maxDailyDrawdownPercent);
+    if (dd.paused) { bot.status = 'PAUSED'; bot.stopReason = dd.reason; log(bot, `Paused: ${dd.reason}`); return; }
+  }
+  if (bot.dailyProfitTargetPercent) {
+    const pt = checkDailyProfitTarget(bot, livePrice);
+    if (pt.stopped) { bot.status = 'STOPPED_OUT'; bot.stopReason = pt.reason; log(bot, `Stopped: ${pt.reason}`); return; }
+  }
+  if (bot.trailingStopPercent) {
+    const ts = checkTrailingStop(bot, account, livePrice);
+    if (ts.exited) return;
+  }
+
   markUnrealised(bot, livePrice);
 
   for (const rung of bot.rungs) {
@@ -479,6 +644,21 @@ function runQSL(bot, livePrice) {
   const feeFrac = feeFor(bot.broker, 'MAKER') / 100; // rung fills are resting limit orders
   bot.currentPrice = livePrice;
   if (checkExit(bot, account, livePrice)) return;
+
+  // Risk management: daily drawdown pauses the bot; profit target or trailing stop exits it
+  if (bot.maxDailyDrawdownPercent) {
+    const dd = checkDailyDrawdown(account, bot.maxDailyDrawdownPercent);
+    if (dd.paused) { bot.status = 'PAUSED'; bot.stopReason = dd.reason; log(bot, `Paused: ${dd.reason}`); return; }
+  }
+  if (bot.dailyProfitTargetPercent) {
+    const pt = checkDailyProfitTarget(bot, livePrice);
+    if (pt.stopped) { bot.status = 'STOPPED_OUT'; bot.stopReason = pt.reason; log(bot, `Stopped: ${pt.reason}`); return; }
+  }
+  if (bot.trailingStopPercent) {
+    const ts = checkTrailingStop(bot, account, livePrice);
+    if (ts.exited) return;
+  }
+
   markUnrealised(bot, livePrice);
 
   // Auto-recenter trigger: price reaches triggerLevel above/below center
@@ -607,21 +787,14 @@ function runPositionExits(liveCoins) {
     let p = coin.price;
     const long = pos.side === 'LONG';
     let reason = null;
-    // Liquidation first: close at the liquidation price so loss is capped near the posted margin
-    if (pos.liquidationPrice && pos.leverage > 1 && (long ? p <= pos.liquidationPrice : p >= pos.liquidationPrice)) {
-      reason = 'LIQUIDATION';
-      p = pos.liquidationPrice;
-    } else if (pos.slPrice && (long ? p <= pos.slPrice : p >= pos.slPrice)) reason = 'STOP_LOSS'; // SL wins if both are crossed
+    if (pos.slPrice && (long ? p <= pos.slPrice : p >= pos.slPrice)) reason = 'STOP_LOSS';
     else if (pos.tpPrice && (long ? p >= pos.tpPrice : p <= pos.tpPrice)) reason = 'TAKE_PROFIT';
     if (!reason) continue;
-    // Stops/targets are market orders (slippage + taker fee); liquidation closes at the liquidation price
-    const ex = reason === 'LIQUIDATION'
-      ? { price: p, feePct: feeFor(pos.broker, 'TAKER'), slippagePct: 0 }
-      : executionCost({ broker: pos.broker, side: long ? 'SELL' : 'BUY', refPrice: p, size: pos.size, quoteVolume: coin.quoteVolume });
+    const ex = executionCost({ broker: pos.broker, side: long ? 'SELL' : 'BUY', refPrice: p, size: pos.size, quoteVolume: coin.quoteVolume });
     const order = {
       id: uid('ord-exit'), accountId: account.id, broker: pos.broker, symbol: pos.symbol,
       side: long ? 'SELL' : 'BUY', orderType: 'MARKET', price: p, size: pos.size, filledSize: 0,
-      status: 'OPEN', timeInForce: 'IOC', leverage: pos.leverage, source: 'TP_SL', notes: `${reason} @ ${p}`,
+      status: 'OPEN', timeInForce: 'IOC', source: 'TP_SL', notes: `${reason} @ ${p}`,
       timestamp: new Date().toISOString(), fee: 0,
     };
     const result = settleAndRecord(account, order, ex.price, ex.feePct, { liquidity: 'TAKER', slippagePct: ex.slippagePct, refPrice: p });
@@ -645,7 +818,7 @@ async function runCycleInner() {
   const running = botsState.bots.filter((b) => b.status === 'RUNNING');
   const hasGtt = gttRules.some((r) => r.status === 'ACTIVE');
   const hasOpenOrders = orders.some((o) => o.status === 'OPEN');
-  const hasExits = positions.length > 0; // TP/SL and liquidation checks
+  const hasExits = positions.length > 0; // TP/SL checks
   if (running.length === 0 && !hasGtt && !hasOpenOrders && !hasExits) return;
 
   let liveCoins;
@@ -658,14 +831,15 @@ async function runCycleInner() {
   if (isFeedStale()) return;
   liveIndex = liveCoins;
 
-  // Futures funding settles every 8h; only fetch rates when a boundary has actually passed
-  if (fundingDue()) {
-    const rates = await getFundingRates();
-    settleFunding({ rateFor: (sym) => rates.get(sym) ?? defaultFundingRate(), markFor: (sym) => liveCoins.get(sym)?.price });
-  }
-
   const now = Date.now();
   for (const bot of running) {
+    // Time-based exit: stop bot after the configured hours
+    if (bot.timeExitAt && now >= bot.timeExitAt) {
+      bot.status = 'STOPPED_OUT';
+      bot.stopReason = 'TIME_EXIT';
+      log(bot, `Time-based exit: stopping after ${bot.timeExitHours} hour(s).`);
+      continue;
+    }
     const coin = liveCoins.get(bot.symbol);
     if (!coin) continue;
     try {
@@ -673,6 +847,7 @@ async function runCycleInner() {
       else if (bot.type === 'BREAKOUT_CHASER') runBreakout(bot, coin.price);
       else if (bot.type === 'GRID_BOT' && Array.isArray(bot.rungs)) runGrid(bot, coin.price);
       else if (bot.type === 'QSL' && Array.isArray(bot.levels)) runQSL(bot, coin.price);
+      else if (bot.type === 'DCA_ACCUMULATOR') runDCA(bot, coin.price, now);
     } catch (err) {
       bot.status = 'ERROR';
       log(bot, `Bot halted by internal error: ${err.message}`);
@@ -694,4 +869,4 @@ export function startBotLoop(intervalMs = 3000) {
 }
 
 /** Per-bot runners, exposed so tests can drive them with scripted prices (no network). */
-export const __runners = { runTwap, runBreakout, runGrid, runQSL, runOpenOrders };
+export const __runners = { runTwap, runBreakout, runGrid, runQSL, runDCA, runOpenOrders };
