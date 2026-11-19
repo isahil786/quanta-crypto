@@ -180,8 +180,8 @@ export function startPriceFeed() {
 
 /** Get live price index from WebSocket (primary) with REST fallback. */
 export async function getLivePriceIndex() {
-  // Prefer WebSocket index if it has data and is fresh
-  if (wsIndex.size > 0 && Date.now() - wsLastUpdate < 10000) {
+  // Prefer WebSocket index if it has data and is fresh (skip in test mode so mocked fetch always works)
+  if (!process.env.QUANTA_TEST && wsIndex.size > 0 && Date.now() - wsLastUpdate < 10000) {
     return wsIndex;
   }
   // Fallback: REST poll (existing behavior)
@@ -256,7 +256,8 @@ export function getPrecision(price) {
  */
 export async function getLiveTop100MomentumCoins() {
   const now = Date.now();
-  if (cachedTop100.length > 0 && now - lastFetchTime < CACHE_TTL_MS) {
+  // Skip cache in test mode so mocked fetch always returns fresh data
+  if (!process.env.QUANTA_TEST && cachedTop100.length > 0 && now - lastFetchTime < CACHE_TTL_MS) {
     return cachedTop100;
   }
   if (inflight) return inflight;

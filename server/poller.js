@@ -1,5 +1,6 @@
 // Order poller: polls CoinSwitch for order changes on master accounts
-// and replicates create / modify / cancel operations to all mirror accounts.
+// and replicates create / modify / cancel operations to all mirror accounts
+// by placing real orders on replica accounts via the CoinSwitch adapter.
 import { accounts, orders, mirrorConfig } from './state.js';
 import { checkMargin, releaseOrder, reserveOrder } from './positions.js';
 import { executionCost } from './costs.js';
@@ -12,6 +13,7 @@ let timer = null;
 let cycleRunning = false;
 const adapters = new Map();      // accountId -> CoinSwitchAdapter
 const lastPolled = new Map();    // accountId -> Map<exchangeOrderId, snapshot>
+const lastPriceBySymbol = new Map(); // symbol -> last known price (fallback for MARKET->LIMIT)
 
 function getAdapter(account) {
   let adapter = adapters.get(account.id);
@@ -52,6 +54,10 @@ function normalizeStatus(s) {
   switch (String(s).toUpperCase()) {
     case 'NEW': return 'OPEN';
     case 'CANCELED': case 'CANCELLED': return 'CANCELLED';
+    case 'PARTIALLY_FILLED': return 'PARTIALLY_FILLED';
+    case 'FILLED': return 'FILLED';
+    case 'REJECTED': return 'REJECTED';
+    case 'EXPIRED': return 'EXPIRED';
     default: return s;
   }
 }
@@ -76,16 +82,35 @@ function capList(list, max) {
   if (list.length > max) list.length = max;
 }
 
+/** Strip control characters/newlines from an exchange-controlled order id so it
+ *  cannot inject line breaks into persisted notes/log strings. */
+function sanitizeOrderId(id) {
+  return String(id ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Reduce an adapter error to a safe generic reason (no raw response bodies/headers)
+ *  suitable for persisting in mirror logs. */
+function sanitizeAdapterError(err) {
+  const msg = String(err && err.message ? err.message : err);
+  // Strip anything after a colon that typically carries the raw HTTP response body.
+  return msg.split(':')[0].trim() || 'Adapter error';
+}
+
 /** Resolve a finite reference price for a mirror order. MARKET orders adapted to LIMIT
- *  use the live price as a marketable limit so reserveMirror accepts them. */
+ *  use the live price as a marketable limit, falling back to the last known price. */
 function resolveRefPrice(masterOrder, liveIndex) {
   if (masterOrder.orderType === 'LIMIT' && masterOrder.price != null) {
     return Number(masterOrder.price);
   }
   if (liveIndex) {
     const coin = liveIndex.get(masterOrder.symbol);
-    if (coin && Number.isFinite(coin.price)) return coin.price;
+    if (coin && Number.isFinite(coin.price)) {
+      lastPriceBySymbol.set(masterOrder.symbol, coin.price);
+      return coin.price;
+    }
   }
+  const fallback = lastPriceBySymbol.get(masterOrder.symbol);
+  if (Number.isFinite(fallback)) return fallback;
   return undefined;
 }
 
@@ -98,7 +123,7 @@ function buildMirrorOrder(replicaAcc, masterOrder, multiplier, refPrice) {
     repOrderType = 'LIMIT';
     adaptationNote = 'Adapted MARKET order to LIMIT for CoinSwitch Spot compliance.';
   }
-  const masterOrderId = masterOrder.exchangeOrderId || masterOrder.orderId || masterOrder.id;
+  const masterOrderId = sanitizeOrderId(masterOrder.exchangeOrderId || masterOrder.orderId || masterOrder.id);
   return {
     id: uid('ord-rep'),
     accountId: replicaAcc.id,
@@ -114,13 +139,13 @@ function buildMirrorOrder(replicaAcc, masterOrder, multiplier, refPrice) {
     leverage: 1,
     timestamp: new Date().toISOString(),
     fee: 0,
-    mode: 'REAL',
+    mode: replicaAcc.mode || 'PAPER',
     notes: `Mirror of ${masterOrderId}${adaptationNote ? ' | ' + adaptationNote : ''}`.trim(),
     mirrorsMasterOrderId: masterOrderId,
   };
 }
 
-/** Reserve funds for a resting mirror order. Returns {ok, reason?}. */
+/** Reserve funds for a resting mirror order (local PAPER-mode simulation only). */
 function reserveMirror(replicaAcc, repOrder) {
   const refPrice = repOrder.price;
   if (!refPrice || !Number.isFinite(refPrice)) return { ok: false, reason: 'No reference price for mirror order' };
@@ -141,6 +166,81 @@ function pushMirrorLog(entry) {
   capList(mirrorConfig.logs, 500);
 }
 
+/** Place a real order on a replica account via the adapter, or simulate for PAPER mode. */
+async function placeReplicaOrder(replicaAcc, repOrder) {
+  if (replicaAcc.mode !== 'REAL') {
+    // PAPER mode: simulate locally without touching the exchange.
+    const reserved = reserveMirror(replicaAcc, repOrder);
+    if (!reserved.ok) return { ok: false, reason: reserved.reason, result: null };
+    orders.unshift(repOrder);
+    capList(orders, 10000);
+    return { ok: true, reason: null, result: { orderId: repOrder.id, status: 'OPEN', filledSize: 0, fillPrice: undefined, fee: undefined, raw: null } };
+  }
+
+  // Cross-broker guard: only place on CoinSwitch replicas; never send another
+  // broker's credentials to the CoinSwitch adapter.
+  if (replicaAcc.broker !== 'coinswitch' || replicaAcc.isMaster) {
+    return { ok: false, reason: 'Replica is not a CoinSwitch non-master account', result: null };
+  }
+
+  const adapter = getAdapter(replicaAcc);
+  let placed;
+  try {
+    placed = await adapter.placeOrder({
+      accountId: replicaAcc.id,
+      symbol: repOrder.symbol,
+      side: repOrder.side,
+      type: repOrder.orderType,
+      size: repOrder.size,
+      price: repOrder.price,
+      timeInForce: repOrder.timeInForce,
+    });
+  } catch (err) {
+    return { ok: false, reason: sanitizeAdapterError(err), result: null };
+  }
+
+  // Map adapter result to local mirror order state.
+  repOrder.exchangeOrderId = placed.orderId;
+  repOrder.status = normalizeStatus(placed.status);
+  repOrder.filledSize = Number(placed.filledSize || 0);
+  repOrder.fillPrice = placed.fillPrice ?? undefined;
+  repOrder.fee = placed.fee ?? 0;
+  repOrder.timestamp = placed.timestamp ?? new Date().toISOString();
+  orders.unshift(repOrder);
+  capList(orders, 10000);
+  return { ok: true, reason: null, result: placed };
+}
+
+/** Cancel a real order on a replica account via the adapter, or simulate for PAPER mode. */
+async function cancelReplicaOrder(replicaAcc, repOrder) {
+  if (replicaAcc.mode !== 'REAL') {
+    releaseMirror(replicaAcc, repOrder);
+    repOrder.status = 'CANCELLED';
+    repOrder.notes = (repOrder.notes || '') + ' | Mirrored cancel from master (paper)';
+    return { ok: true, reason: null };
+  }
+
+  // Cross-broker guard: only cancel on CoinSwitch replicas.
+  if (replicaAcc.broker !== 'coinswitch' || replicaAcc.isMaster) {
+    releaseMirror(replicaAcc, repOrder);
+    repOrder.status = 'CANCELLED';
+    repOrder.notes = (repOrder.notes || '') + ' | Mirrored cancel from master (skipped non-CoinSwitch replica)';
+    return { ok: true, reason: null };
+  }
+
+  const adapter = getAdapter(replicaAcc);
+  try {
+    await adapter.cancelOrder(replicaAcc.id, repOrder.exchangeOrderId || repOrder.id, repOrder.symbol);
+  } catch (err) {
+    return { ok: false, reason: sanitizeAdapterError(err) };
+  }
+
+  releaseMirror(replicaAcc, repOrder);
+  repOrder.status = 'CANCELLED';
+  repOrder.notes = (repOrder.notes || '') + ' | Mirrored cancel from master';
+  return { ok: true, reason: null };
+}
+
 /** Mirror one create/modify/cancel action onto all replicas of a master, concurrently. */
 async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
   const masterOrderId = eo.exchangeOrderId || eo.orderId || eo.id;
@@ -157,24 +257,22 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
       const existing = orders.find((o) => o.accountId === replicaAcc.id && o.mirrorsMasterOrderId === masterOrderId);
       if (existing) return;
       const repOrder = buildMirrorOrder(replicaAcc, eo, multiplier, refPrice);
-      const reserved = reserveMirror(replicaAcc, repOrder);
-      if (!reserved.ok) {
+      const placed = await placeReplicaOrder(replicaAcc, repOrder);
+      if (!placed.ok) {
         pushMirrorLog({
           id: uid('mlog'), timestamp: new Date().toISOString(),
           masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
           targetAccount: replicaAcc.accountName,
-          status: 'REJECTED', details: reserved.reason,
+          status: 'REJECTED', details: placed.reason,
         });
         return;
       }
-      orders.unshift(repOrder);
-      capList(orders, 10000);
       pushMirrorLog({
         id: uid('mlog'), timestamp: new Date().toISOString(),
         masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
         targetAccount: replicaAcc.accountName,
         status: 'EXECUTED',
-        details: `Mirrored new ${eo.orderType} ${eo.side} ${eo.size} ${eo.symbol} @ ${eo.price ?? 'market'} (${multiplier}x).`,
+        details: `Mirrored new ${eo.orderType} ${eo.side} ${eo.size} ${eo.symbol} @ ${eo.price ?? 'market'} (${multiplier}x) on ${replicaAcc.accountName}.`,
       });
     } else if (action === 'modify') {
       const repOrder = orders.find((o) => o.accountId === replicaAcc.id && o.mirrorsMasterOrderId === masterOrderId);
@@ -182,12 +280,24 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
       const masterStatus = normalizeStatus(eo.status);
 
       // Propagate fill / partial-fill status from master to replica.
+      // For REAL replicas cancel the order on the exchange so exchange and local state stay in sync.
       if (masterStatus === 'FILLED' || masterStatus === 'PARTIALLY_FILLED') {
         releaseMirror(replicaAcc, repOrder);
         repOrder.status = masterStatus;
         repOrder.filledSize = Number(eo.filledSize || 0);
         repOrder.fillPrice = eo.price != null ? Number(eo.price) : repOrder.price;
         repOrder.timestamp = new Date().toISOString();
+        if (replicaAcc.mode === 'REAL' && repOrder.exchangeOrderId) {
+          const cancelled = await cancelReplicaOrder(replicaAcc, repOrder);
+          if (!cancelled.ok) {
+            pushMirrorLog({
+              id: uid('mlog'), timestamp: new Date().toISOString(),
+              masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
+              targetAccount: replicaAcc.accountName,
+              status: 'REJECTED', details: `fill cancel failed: ${cancelled.reason}`,
+            });
+          }
+        }
         pushMirrorLog({
           id: uid('mlog'), timestamp: new Date().toISOString(),
           masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
@@ -198,8 +308,19 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
         return;
       }
 
-      // Resting order price/size change: release old reservation, re-check margin, re-reserve.
-      releaseMirror(replicaAcc, repOrder);
+      // Resting order price/size change: CoinSwitch does not support in-place modify,
+      // so cancel the existing replica order and place a replacement.
+      const cancelled = await cancelReplicaOrder(replicaAcc, repOrder);
+      if (!cancelled.ok) {
+        pushMirrorLog({
+          id: uid('mlog'), timestamp: new Date().toISOString(),
+          masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side})`,
+          targetAccount: replicaAcc.accountName,
+          status: 'REJECTED', details: `cancel failed: ${cancelled.reason}`,
+        });
+        return;
+      }
+
       const newPrice = repOrder.orderType === 'LIMIT' && refPrice != null ? refPrice : repOrder.price;
       const newSize = Number((Number(eo.size) * multiplier).toFixed(8));
       if (!isPositiveNumber(newSize)) {
@@ -211,17 +332,51 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
         });
         return;
       }
-      repOrder.price = newPrice;
-      repOrder.size = newSize;
-      repOrder.timestamp = new Date().toISOString();
-      const reserved = reserveMirror(replicaAcc, repOrder);
-      if (!reserved.ok) {
-        repOrder.status = 'CANCELLED';
+
+      const replacement = buildMirrorOrder(replicaAcc, eo, multiplier, newPrice);
+      replacement.id = uid('ord-replace');
+      replacement.timestamp = new Date().toISOString();
+      replacement.notes = `Replaced from ${repOrder.id} via cancel-and-replace on ${replicaAcc.accountName}`;
+      const placed = await placeReplicaOrder(replicaAcc, replacement);
+      if (!placed.ok) {
+        // Rollback: re-place the original order so the replica is not left order-less.
+        // repOrder is already tracked in `orders`, so do not unshift again.
+        repOrder.status = 'OPEN';
+        let rePlacedOk = false;
+        let rePlacedReason = '';
+        if (replicaAcc.mode !== 'REAL') {
+          const reserved = reserveMirror(replicaAcc, repOrder);
+          if (reserved.ok) rePlacedOk = true;
+          else rePlacedReason = reserved.reason;
+        } else {
+          const adapter2 = getAdapter(replicaAcc);
+          try {
+            const r2 = await adapter2.placeOrder({
+              accountId: replicaAcc.id,
+              symbol: repOrder.symbol,
+              side: repOrder.side,
+              type: repOrder.orderType,
+              size: repOrder.size,
+              price: repOrder.price,
+              timeInForce: repOrder.timeInForce,
+            });
+            repOrder.exchangeOrderId = r2.orderId;
+            repOrder.status = normalizeStatus(r2.status);
+            repOrder.filledSize = Number(r2.filledSize || 0);
+            repOrder.fillPrice = r2.fillPrice ?? undefined;
+            repOrder.fee = r2.fee ?? 0;
+            repOrder.timestamp = r2.timestamp ?? new Date().toISOString();
+            rePlacedOk = true;
+          } catch (err) {
+            rePlacedReason = sanitizeAdapterError(err);
+          }
+        }
         pushMirrorLog({
           id: uid('mlog'), timestamp: new Date().toISOString(),
           masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side})`,
           targetAccount: replicaAcc.accountName,
-          status: 'REJECTED', details: reserved.reason,
+          status: rePlacedOk ? 'EXECUTED' : 'REJECTED',
+          details: `replace failed: ${placed.reason}; ${rePlacedOk ? 'original re-placed' : 'original re-place failed: ' + rePlacedReason}`,
         });
         return;
       }
@@ -230,27 +385,34 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
         masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
         targetAccount: replicaAcc.accountName,
         status: 'EXECUTED',
-        details: `Mirrored modify ${eo.orderType} ${eo.side} ${eo.size} ${eo.symbol} @ ${eo.price ?? 'market'} (${multiplier}x).`,
+        details: `Mirrored modify ${eo.orderType} ${eo.side} ${eo.size} ${eo.symbol} @ ${eo.price ?? 'market'} (${multiplier}x) via cancel-and-replace on ${replicaAcc.accountName}.`,
       });
     } else if (action === 'cancel') {
       const repOrder = orders.find((o) => o.accountId === replicaAcc.id && o.mirrorsMasterOrderId === masterOrderId);
       if (!repOrder) return;
-      releaseMirror(replicaAcc, repOrder);
-      repOrder.status = 'CANCELLED';
-      repOrder.notes = (repOrder.notes || '') + ' | Mirrored cancel from master';
+      const cancelled = await cancelReplicaOrder(replicaAcc, repOrder);
+      if (!cancelled.ok) {
+        pushMirrorLog({
+          id: uid('mlog'), timestamp: new Date().toISOString(),
+          masterOrder: `${masterOrderId} (${prevSnap.symbol ?? ''} ${prevSnap.side ?? ''})`,
+          targetAccount: replicaAcc.accountName,
+          status: 'REJECTED', details: `cancel failed: ${cancelled.reason}`,
+        });
+        return;
+      }
       pushMirrorLog({
         id: uid('mlog'), timestamp: new Date().toISOString(),
         masterOrder: `${masterOrderId} (${prevSnap.symbol ?? ''} ${prevSnap.side ?? ''})`,
         targetAccount: replicaAcc.accountName,
         status: 'EXECUTED',
-        details: `Mirrored cancel of ${masterOrderId}.`,
+        details: `Mirrored cancel of ${masterOrderId} on ${replicaAcc.accountName}.`,
       });
     }
   }));
 }
 
-/** Build O(1) indexes: orders by exchange id per account, and mirrors by master order id. */
-function buildIndexes() {
+/** Build O(1) index: orders by exchange id per account. */
+function buildOrdersByExchangeId() {
   const ordersByExchangeId = new Map(); // accountId -> Map<exchangeOrderId, order>
   for (const o of orders) {
     if (o.exchangeOrderId) {
@@ -264,7 +426,7 @@ function buildIndexes() {
 
 /** Poll once: detect new/modified/cancelled orders on master CoinSwitch accounts and mirror. */
 export async function pollOnce() {
-  const ordersByExchangeId = buildIndexes();
+  const ordersByExchangeId = buildOrdersByExchangeId();
 
   let liveIndex;
   try { liveIndex = await getLivePriceIndex(); } catch { liveIndex = null; }

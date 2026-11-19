@@ -2,9 +2,29 @@
   {
     "id": "acc-cs-01",
     "broker": "coinswitch",
-    "accountName": "CoinSwitch PRO Spot",
+    "accountName": "CoinSwitch PRO Spot (Master)",
     "segment": "SPOT",
     "exchange": "c2c1",
-    "mode": "PAPER"
+    "mode": "PAPER",
+    "status": "ACTIVE",
+    "isMaster": true,
+    "apiKey": "REPLACE_WITH_MASTER_API_KEY",
+    "apiSecret": "REPLACE_WITH_MASTER_API_SECRET",
+    "totalEquityUSDT": 10000,
+    "availableMarginUSDT": 10000
+  },
+  {
+    "id": "acc-delta-01",
+    "broker": "delta",
+    "accountName": "Delta Exchange",
+    "segment": "SPOT",
+    "exchange": "c2c1",
+    "mode": "PAPER",
+    "status": "ACTIVE",
+    "isMaster": false,
+    "apiKey": "REPLACE_WITH_DELTA_API_KEY",
+    "apiSecret": "REPLACE_WITH_DELTA_API_SECRET",
+    "totalEquityUSDT": 10000,
+    "availableMarginUSDT": 10000
   }
 ]

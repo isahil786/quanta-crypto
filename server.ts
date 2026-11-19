@@ -1288,7 +1288,7 @@ app.post('/api/bots', async (req, res) => {
         ...newBot,
         triggerPrice: Number(triggerPrice),
         size: Number(size),
-        leverage: 1,
+        leverage: Number(leverage),
         tpPrice: tpPrice ? Number(tpPrice) : undefined,
         slPrice: slPrice ? Number(slPrice) : undefined,
       };
@@ -1715,6 +1715,32 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: status === 400 ? 'Malformed request body' : process.env.NODE_ENV !== 'production' ? err.message || 'Internal error' : 'Internal error' });
 });
 
+/** Load seed accounts from a JSON file into the live accounts/holdings arrays.
+ *  Returns the number of new accounts added. Safe to call in test mode. */
+function seedAccountsFromFile(filePath) {
+  const seedAccounts = loadSeedAccounts(filePath);
+  for (const seed of seedAccounts) {
+    const exists = accounts.some((a) => a.broker === seed.broker && a.accountName === seed.accountName);
+    if (exists) continue;
+    accounts.push(seed);
+    holdings.push({
+      accountId: seed.id,
+      broker: seed.broker,
+      asset: 'USDT',
+      name: 'Tether USD',
+      free: seed.availableMarginUSDT,
+      locked: 0,
+      total: seed.availableMarginUSDT,
+      rateUSDT: 1.0,
+      valueUSDT: seed.availableMarginUSDT,
+    });
+  }
+  if (seedAccounts.length) {
+    console.log(`[seed] loaded ${seedAccounts.length} account(s) from ${filePath}`);
+  }
+  return seedAccounts.length;
+}
+
 async function startServer() {
   if (isDev) {
     const { createServer: createViteServer } = await import('vite');
@@ -1742,26 +1768,8 @@ async function startServer() {
   // Seed accounts from ACCOUNTS_FILE (user-editable JSON). Credentials are
   // stored plaintext in this file — fine for local-only use; never commit real keys.
   try {
-    const seedAccounts = loadSeedAccounts(process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE);
-    for (const seed of seedAccounts) {
-      const exists = accounts.some((a) => a.broker === seed.broker && a.accountName === seed.accountName);
-      if (exists) continue;
-      accounts.push(seed);
-      holdings.push({
-        accountId: seed.id,
-        broker: seed.broker,
-        asset: 'USDT',
-        name: 'Tether USD',
-        free: seed.availableMarginUSDT,
-        locked: 0,
-        total: seed.availableMarginUSDT,
-        rateUSDT: 1.0,
-        valueUSDT: seed.availableMarginUSDT,
-      });
-    }
-    if (seedAccounts.length) {
-      console.log(`[seed] loaded ${seedAccounts.length} account(s) from ${process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE}`);
-    }
+    const seedFile = process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE;
+    seedAccountsFromFile(seedFile);
 
     // Fail-safe: refuse to start if any REAL-mode account lacks real credentials.
     // Prevents accidentally trading with simulated balances when you intended live trading.
@@ -1950,7 +1958,17 @@ async function startServer() {
   });
 }
 
-if (!process.env.QUANTA_TEST) startServer().catch((err) => {
-  console.error(`[startup] ${err.message}`);
-  process.exit(1);
-});
+if (!process.env.QUANTA_TEST) {
+  startServer().catch((err) => {
+    console.error(`[startup] ${err.message}`);
+    process.exit(1);
+  });
+} else {
+  // Test mode: seed accounts so route/bot tests have a working account.
+  const seedFile = process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE;
+  let seeded = false;
+  try { seeded = seedAccountsFromFile(seedFile) > 0; } catch {}
+  if (!seeded) {
+    try { seedAccountsFromFile(path.resolve(process.cwd(), 'data', 'accounts.json.example')); } catch {}
+  }
+}
