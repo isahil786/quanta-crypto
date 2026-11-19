@@ -15,30 +15,36 @@ export default function Screener({ tickers, onSelectPair }) {
   // Live halal coin data fetched from the server (merged with live Binance prices).
   const [halalCoins, setHalalCoins] = useState([]);
   const [halalMeta, setHalalMeta] = useState(null);
-  const [halalLoading, setHalalLoading] = useState(false);
+  const [halalLoading, setHalalLoading] = useState(true);
 
-  useEffect(() => {
-    if (filterMode !== 'halal') return;
-    let cancelled = false;
-    setHalalLoading(true);
+  const fetchHalal = () => {
     fetch('/api/halal/coins')
       .then((r) => {
-        if (!cancelled && r.ok) return r.json();
+        if (r.ok) return r.json();
         throw new Error('halal feed unavailable');
       })
       .then((data) => {
-        if (!cancelled) {
-          setHalalCoins(data.tradable || []);
-          setHalalMeta(data.meta || null);
-        }
+        setHalalCoins(data.tradable || []);
+        setHalalMeta(data.meta || null);
       })
       .catch(() => {
-        if (!cancelled) setHalalCoins([]);
+        setHalalCoins([]);
       })
       .finally(() => {
-        if (!cancelled) setHalalLoading(false);
+        setHalalLoading(false);
       });
-    return () => { cancelled = true; };
+  };
+
+  useEffect(() => {
+    if (filterMode !== 'halal') {
+      setHalalCoins([]);
+      setHalalMeta(null);
+      setHalalLoading(true);
+      return;
+    }
+    fetchHalal();
+    const timer = setInterval(fetchHalal, 3000); // live refresh like the momentum screener
+    return () => clearInterval(timer);
   }, [filterMode]);
 
   // Build the active list: either live halal coins or the local momentum tickers.
