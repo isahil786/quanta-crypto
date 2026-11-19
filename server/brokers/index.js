@@ -1,17 +1,19 @@
 import { COINSWITCH_META, signCoinSwitchRequest, validateCoinSwitchOrder } from './coinswitch.js';
 import { DELTA_META, signDeltaRequest, validateDeltaOrder } from './delta.js';
 import { COINDCX_META, signCoinDCXRequest, validateCoinDCXOrder } from './coindcx.js';
+import { BINANCE_META, validateBinanceOrder } from './binance.js';
 
 export const BROKERS = {
   coinswitch: COINSWITCH_META,
   delta: DELTA_META,
   coindcx: COINDCX_META,
+  binance: BINANCE_META,
 };
 
 export const BROKER_NAMES = Object.keys(BROKERS);
 export const DEFAULT_BROKER = 'coinswitch';
 
-export const MARKET_DATA_BROKERS = ['coinswitch', 'delta', 'coindcx'];
+export const MARKET_DATA_BROKERS = ['coinswitch', 'delta', 'coindcx', 'binance'];
 
 export function getBrokerMeta(brokerId) {
   return BROKERS[brokerId] || BROKERS[DEFAULT_BROKER];
@@ -26,6 +28,9 @@ export function validateBrokerOrder(brokerId, orderParams, account) {
   }
   if (brokerId === 'coindcx') {
     return validateCoinDCXOrder(orderParams);
+  }
+  if (brokerId === 'binance') {
+    return validateBinanceOrder(orderParams, account?.segment || 'SPOT');
   }
   return true;
 }

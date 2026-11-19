@@ -15,7 +15,7 @@ export const COINSWITCH_META = {
     { name: 'accountType', label: 'Segment', type: 'select', options: ['SPOT', 'FUTURES'], defaultValue: 'SPOT', required: true },
   ],
   capabilities: {
-    supportsMarketOrder: false, // Spot is LIMIT-only, Futures supports market
+    supportsMarketOrder: true, // Spot supports MARKET and LIMIT orders
     supportsFuturesMarketOrder: true,
     supportsModifyOrder: false, // Cancel + replace
     supportsCancelOrder: true,
@@ -83,10 +83,7 @@ export function signCoinSwitchRequest(method, endpoint, payload, secretKeyHex) {
 }
 
 export function validateCoinSwitchOrder(orderParams, accountSegment = 'SPOT') {
-  if (accountSegment === 'SPOT' && orderParams.orderType === 'MARKET') {
-    throw new Error('CoinSwitch Spot only supports LIMIT orders. Switch to FUTURES segment for MARKET orders.');
-  }
-  if (!orderParams.price && orderParams.orderType === 'LIMIT') {
+  if (orderParams.orderType === 'LIMIT' && !orderParams.price) {
     throw new Error('Limit price is required for CoinSwitch Limit orders.');
   }
   return true;

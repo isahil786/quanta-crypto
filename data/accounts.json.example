@@ -1,0 +1,10 @@
+[
+  {
+    "id": "acc-cs-01",
+    "broker": "coinswitch",
+    "accountName": "CoinSwitch PRO Spot",
+    "segment": "SPOT",
+    "exchange": "c2c1",
+    "mode": "PAPER"
+  }
+]

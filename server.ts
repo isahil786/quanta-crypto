@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { loadState, startPersistence } from './server/persist.js';
+import { loadSeedAccounts, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
 import {
   BROKERS,
   DEFAULT_BROKER,
@@ -16,6 +17,8 @@ import {
   signDeltaRequest,
   signCoinDCXRequest,
 } from './server/brokers/index.js';
+import { BinanceAdapter } from './server/execution/binance.js';
+import { CoinSwitchAdapter } from './server/execution/coinswitch.js';
 import {
   accounts,
   orders,
@@ -101,6 +104,166 @@ function sanitizeAccount(acc) {
   return { ...safe, hasCredentials: Boolean(apiKey && apiSecret) };
 }
 
+// Return stored credentials for runtime use (signing, test-connection).
+// Keys are stored plaintext in data/accounts.json (local-only use).
+function accountCredentials(account) {
+  if (!account) return { apiKey: '', apiSecret: '' };
+  return {
+    apiKey: account.apiKey || '',
+    apiSecret: account.apiSecret || '',
+  };
+}
+
+/** Apply a real exchange fill event to local orders/trades/positions state. */
+function applyRealFill(account, event) {
+  const order = orders.find((o) =>
+    o.accountId === account.id &&
+    (o.exchangeOrderId === event.orderId || o.clientOrderId === event.clientOrderId)
+  );
+  if (!order) return;
+
+  const prevFilled = Number(order.filledSize || 0);
+  const newFilled = Number(event.filledSize || 0);
+  const incremental = newFilled - prevFilled;
+  if (incremental <= 0) return; // already processed
+
+  const fillPrice = Number(event.fillPrice || order.price || 0);
+  const feePct = feeFor(account.broker, 'TAKER');
+  const value = fillPrice * incremental;
+  const fee = Number(((value * feePct) / 100).toFixed(4));
+
+  // Update order
+  order.filledSize = newFilled;
+  order.fillPrice = fillPrice;
+  order.fee = Number((Number(order.fee || 0) + fee).toFixed(4));
+  order.status = newFilled >= Number(order.size) ? 'FILLED' : 'PARTIALLY_FILLED';
+
+  // Update account balance (fee + notional)
+  account.availableMarginUSDT = Number((account.availableMarginUSDT - fee).toFixed(6));
+  account.totalEquityUSDT = Number((account.totalEquityUSDT - fee).toFixed(6));
+
+  const asset = String(order.symbol).replace(/\/USDT$/, '').replace(/USDT$/, '');
+  let sellAvgCost = 0;
+
+  if (order.side === 'BUY') {
+    account.availableMarginUSDT = Number(Math.max(account.availableMarginUSDT - value, 0).toFixed(6));
+    let h = holdings.find((h) => h.accountId === account.id && h.asset === asset);
+    if (!h) {
+      h = { accountId: account.id, broker: account.broker, asset, name: asset, free: 0, locked: 0, total: 0, rateUSDT: 0, valueUSDT: 0, avgCost: 0 };
+      holdings.push(h);
+    }
+    h.avgCost = (h.avgCost * h.total + value) / (h.total + incremental);
+    h.total = Number((h.total + incremental).toFixed(10));
+    h.free = Number((h.free + incremental).toFixed(10));
+    h.rateUSDT = fillPrice;
+    h.valueUSDT = Number((h.total * fillPrice).toFixed(2));
+  } else {
+    // SELL
+    let h = holdings.find((h) => h.accountId === account.id && h.asset === asset);
+    if (!h || Number(h.total) < incremental) {
+      // Selling an asset we don't hold: credit only the fee-adjusted proceeds, no position update
+      account.availableMarginUSDT = Number((account.availableMarginUSDT + value).toFixed(6));
+      account.totalEquityUSDT = Number((account.totalEquityUSDT).toFixed(6));
+    } else {
+      sellAvgCost = Number(h.avgCost || 0);
+      account.availableMarginUSDT = Number((account.availableMarginUSDT + value).toFixed(6));
+      const pnl = (fillPrice - sellAvgCost) * incremental;
+      account.totalEquityUSDT = Number((account.totalEquityUSDT + pnl).toFixed(6));
+      h.total = Number((h.total - incremental).toFixed(10));
+      h.free = Number(Math.max(h.total - h.locked, 0).toFixed(10));
+      h.rateUSDT = fillPrice;
+      h.valueUSDT = Number((h.total * fillPrice).toFixed(2));
+      if (h.total <= 1e-9) {
+        const idx = holdings.indexOf(h);
+        if (idx >= 0) holdings.splice(idx, 1);
+      }
+    }
+  }
+
+  syncUsdtHolding(account);
+  syncBaseHolding(account, asset);
+
+  // Write trade record
+  const trade = {
+    id: uid('trd'),
+    orderId: order.id,
+    exchangeOrderId: event.orderId,
+    accountId: account.id,
+    broker: account.broker,
+    symbol: order.symbol,
+    side: order.side,
+    price: fillPrice,
+    size: incremental,
+    value,
+    fee,
+    liquidity: 'TAKER',
+    slippagePct: Number(event.slippagePct || 0),
+    realizedPnl: order.side === 'SELL' ? Number(((fillPrice - sellAvgCost) * incremental).toFixed(4)) : 0,
+    timestamp: event.timestamp || new Date().toISOString(),
+  };
+  trades.unshift(trade);
+
+  // Mirror trading: replicate master fills to replica accounts (REAL mode).
+  if (account.isMaster && mirrorConfig.enabled && order.status === 'FILLED') {
+    try {
+      mirrorFilledOrder(account, order, fillPrice, {
+        quoteVolume: 0,
+      });
+    } catch (err) {
+      console.warn(`[mirror] failed to mirror order ${order.id}:`, (err as Error).message);
+    }
+  }
+}
+
+// Per-account real execution adapters (created lazily, credentials decrypted in-memory only).
+const realAdapters = new Map<string, CoinSwitchAdapter | BinanceAdapter>();
+
+// Balance sync dedup + TTL cache: prevents duplicate getAccountInfo calls within the TTL window.
+const balanceInflight = new Map<string, Promise<any>>();
+const balanceCache = new Map<string, { data: any; ts: number }>();
+const BALANCE_TTL_MS = 30_000;
+
+// Broker → adapter class map. Each adapter receives decrypted credentials and is wired with onFill.
+const ADAPTER_CLASSES: Record<string, new (acct: ExecutionAccountLike) => CoinSwitchAdapter | BinanceAdapter> = {
+  coinswitch: CoinSwitchAdapter,
+  binance: BinanceAdapter,
+};
+
+type ExecutionAccountLike = {
+  id: string;
+  broker: string;
+  apiKey: string;
+  apiSecret: string;
+  segment?: string;
+  exchange?: string;
+};
+
+function createRealAdapter(account: { id: string; broker: string; apiKey: string; apiSecret: string; segment?: string; exchange?: string }): CoinSwitchAdapter | BinanceAdapter | undefined {
+  const AdapterClass = ADAPTER_CLASSES[account.broker];
+  if (!AdapterClass) return undefined;
+  const adapter = new AdapterClass({
+    id: account.id,
+    broker: account.broker,
+    apiKey: account.apiKey,
+    apiSecret: account.apiSecret,
+    segment: account.segment,
+    exchange: account.exchange,
+  });
+  adapter.onFill((ev) => applyRealFill(account, ev));
+  return adapter;
+}
+
+function getRealAdapter(account): CoinSwitchAdapter | BinanceAdapter | undefined {
+  let adapter = realAdapters.get(account.id) as CoinSwitchAdapter | BinanceAdapter | undefined;
+  if (!adapter) {
+    const creds = accountCredentials(account);
+    if (!creds.apiKey || !creds.apiSecret) return undefined;
+    adapter = createRealAdapter({ id: account.id, broker: account.broker, apiKey: creds.apiKey, apiSecret: creds.apiSecret, segment: account.segment, exchange: account.exchange });
+    if (adapter) realAdapters.set(account.id, adapter);
+  }
+  return adapter;
+}
+
 const num = (v) => Number(v);
 const VALID_SIDES = new Set(['BUY', 'SELL']);
 const VALID_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
@@ -145,7 +308,7 @@ app.get('/api/accounts', (req, res) => {
 
 app.post('/api/accounts', (req, res) => {
   try {
-    const { broker, accountName, apiKey = '', apiSecret = '', segment = 'SPOT' } = req.body;
+    const { broker, accountName, apiKey = '', apiSecret = '', segment = 'SPOT', mode = 'PAPER' } = req.body;
     if (!broker || !accountName) {
       return res.status(400).json({ error: 'Broker and Account Name are required' });
     }
@@ -155,6 +318,9 @@ app.post('/api/accounts', (req, res) => {
     if (segment !== 'SPOT') {
       return res.status(400).json({ error: 'Segment must be SPOT (spot trading only)' });
     }
+    if (mode === 'REAL' && (!apiKey || !apiSecret)) {
+      return res.status(400).json({ error: 'REAL-mode accounts require both apiKey and apiSecret.' });
+    }
 
     const newAccount = {
       id: uid(`acc-${broker}`),
@@ -162,7 +328,7 @@ app.post('/api/accounts', (req, res) => {
       accountName: String(accountName).slice(0, 60),
       segment,
       status: 'ACTIVE',
-      mode: 'PAPER', // orders are simulated; nothing is sent to the exchange
+      mode: 'PAPER',
       apiKeyMasked: apiKey ? mask(apiKey) : 'Not configured',
       apiKey,
       apiSecret,
@@ -170,7 +336,7 @@ app.post('/api/accounts', (req, res) => {
       totalEquityUSDT: 10000.0,
       availableMarginUSDT: 10000.0,
       unrealizedPnlUSDT: 0,
-      isMaster: false,
+      isMaster: Boolean(req.body.isMaster),
     };
 
     accounts.push(newAccount);
@@ -196,8 +362,9 @@ app.post('/api/accounts/test-connection', async (req, res) => {
   const { accountId, segment: bodySegment } = req.body;
   const stored = accountId ? accounts.find((a) => a.id === accountId) : null;
   const broker = stored?.broker || req.body.broker;
-  const apiKey = stored?.apiKey ?? req.body.apiKey ?? '';
-  const apiSecret = stored?.apiSecret ?? req.body.apiSecret ?? '';
+  const creds = stored ? accountCredentials(stored) : { apiKey: '', apiSecret: '' };
+  const apiKey = (creds.apiKey || req.body.apiKey) ?? '';
+  const apiSecret = (creds.apiSecret || req.body.apiSecret) ?? '';
   const segment = stored?.segment || bodySegment || 'SPOT';
 
   if (!broker) {
@@ -276,6 +443,20 @@ app.delete('/api/accounts/:id', (req, res) => {
   for (const b of botsState.bots) if (b.accountId === removed.id && (b.status === 'RUNNING' || b.status === 'PAUSED')) { b.status = 'CANCELLED'; releaseBotSymbol(b); }
   mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
   res.json({ success: true, removedId: removed.id });
+});
+
+app.post('/api/accounts/:id/sync-balance', async (req, res) => {
+  const account = accounts.find((a) => a.id === req.params.id);
+  if (!account) return res.status(404).json({ error: 'Account not found' });
+  if (account.broker !== 'coinswitch') {
+    return res.status(400).json({ error: 'Balance sync is only supported for CoinSwitch accounts.' });
+  }
+  try {
+    await syncAccountBalances(account);
+    res.json({ success: true, account: account.id, availableMarginUSDT: account.availableMarginUSDT, totalEquityUSDT: account.totalEquityUSDT });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // -------------------------------------------------------------
@@ -453,6 +634,66 @@ app.post('/api/orders', async (req, res) => {
       validateBrokerOrder(brokerId, { orderType, price: req.body.price, size }, account);
     } catch (valErr) {
       return res.status(400).json({ error: valErr.message });
+    }
+
+    // --- REAL MODE: place order on the exchange --------------------------------
+    if (account.mode === 'REAL') {
+      const adapter = getRealAdapter(account);
+      if (!adapter) {
+        return res.status(400).json({ error: 'Real trading not configured for this account (missing Binance credentials or adapter).' });
+      }
+      // Pre-trade margin guard: reject if available margin cannot cover notional + fee
+      const refPrice = orderType === 'LIMIT' ? num(req.body.price) : (await getLivePriceIndex()).get(symbol)?.price;
+      if (!refPrice || !Number.isFinite(refPrice)) {
+        return res.status(400).json({ error: `No live price for ${symbol}; cannot compute order notional.` });
+      }
+      const orderValue = refPrice * size;
+      const feePct = feeFor(account.broker, 'TAKER');
+      const fee = (orderValue * feePct) / 100;
+      if (account.availableMarginUSDT < orderValue + fee) {
+        return res.status(400).json({ error: `Insufficient margin: need ${(orderValue + fee).toFixed(2)} USDT, have ${account.availableMarginUSDT.toFixed(2)} USDT.` });
+      }
+
+      let placed;
+      try {
+        placed = await adapter.placeOrder({
+          accountId: account.id,
+          symbol,
+          side,
+          type: orderType,
+          size,
+          price: orderType === 'LIMIT' ? num(req.body.price) : undefined,
+          timeInForce,
+        });
+      } catch (err) {
+        return res.status(500).json({ error: `Order placement failed: ${(err as Error).message}` });
+      }
+      const realOrder: any = {
+        id: placed.clientOrderId || uid('ord'),
+        exchangeOrderId: placed.orderId,
+        accountId: account.id,
+        broker: brokerId,
+        symbol: placed.symbol,
+        side: placed.side,
+        orderType: placed.type,
+        price: placed.price ?? execPrice,
+        size: placed.size,
+        filledSize: placed.filledSize,
+        status: placed.status === 'NEW' ? 'OPEN' : placed.status === 'CANCELED' ? 'CANCELLED' : placed.status,
+        timeInForce,
+        leverage,
+        tpPrice: tpPrice ? num(tpPrice) : undefined,
+        slPrice: slPrice ? num(slPrice) : undefined,
+        timestamp: placed.timestamp,
+        fee: placed.fee ?? 0,
+        mode: 'REAL',
+        raw: placed.raw,
+      };
+      orders.unshift(realOrder);
+      if (orders.length > 10000) orders.length = 10000;
+      // Note: REAL orders bypass the simulated margin reservation; risk/OMS guards apply at the exchange.
+      res.status(201).json(realOrder);
+      return;
     }
 
     // Live reference price. Unknown symbols are rejected rather than filled at a made-up price.
@@ -771,9 +1012,15 @@ app.get('/api/mirror', (req, res) => {
 });
 
 app.post('/api/mirror/toggle', (req, res) => {
-  const { enabled } = req.body;
+  const { enabled, masterAccountId } = req.body;
   mirrorConfig.enabled = Boolean(enabled);
-  res.json({ success: true, enabled: mirrorConfig.enabled });
+  if (masterAccountId) {
+    const master = accounts.find((a) => a.id === masterAccountId);
+    if (!master) return res.status(404).json({ error: 'Master account not found' });
+    if (!master.isMaster) return res.status(400).json({ error: 'Account is not marked as master' });
+    mirrorConfig.masterAccountId = masterAccountId;
+  }
+  res.json({ success: true, enabled: mirrorConfig.enabled, masterAccountId: mirrorConfig.masterAccountId });
 });
 
 app.post('/api/mirror/update-replica', (req, res) => {
@@ -1490,6 +1737,149 @@ async function startServer() {
     for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => { flush(); process.exit(0); });
     console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${process.env.STATE_FILE}`);
   }
+
+  // Seed accounts from ACCOUNTS_FILE (user-editable JSON). Credentials are
+  // stored plaintext in this file — fine for local-only use; never commit real keys.
+  try {
+    const seedAccounts = loadSeedAccounts(process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE);
+    for (const seed of seedAccounts) {
+      const exists = accounts.some((a) => a.broker === seed.broker && a.accountName === seed.accountName);
+      if (exists) continue;
+      accounts.push(seed);
+      holdings.push({
+        accountId: seed.id,
+        broker: seed.broker,
+        asset: 'USDT',
+        name: 'Tether USD',
+        free: seed.availableMarginUSDT,
+        locked: 0,
+        total: seed.availableMarginUSDT,
+        rateUSDT: 1.0,
+        valueUSDT: seed.availableMarginUSDT,
+      });
+    }
+    if (seedAccounts.length) {
+      console.log(`[seed] loaded ${seedAccounts.length} account(s) from ${process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE}`);
+    }
+
+    // Fail-safe: refuse to start if any REAL-mode account lacks real credentials.
+    // Prevents accidentally trading with simulated balances when you intended live trading.
+    const realAccounts = accounts.filter((a) => a.mode === 'REAL');
+    const badRealAccounts = realAccounts.filter(
+      (a) => !a.apiKey || !a.apiSecret || a.apiKey === 'YOUR_COINSWITCH_API_KEY' || a.apiSecret === 'YOUR_COINSWITCH_SECRET'
+    );
+    if (badRealAccounts.length > 0) {
+      const names = badRealAccounts.map((a) => `${a.accountName} (${a.id})`).join(', ');
+      throw new Error(
+        `REAL-mode account(s) missing valid credentials: ${names}. ` +
+        `Fill in real apiKey/apiSecret in ${process.env.ACCOUNTS_FILE || DEFAULT_ACCOUNTS_FILE} or set mode to PAPER.`
+      );
+    }
+    if (realAccounts.length) {
+      console.log(`[real-mode] ${realAccounts.length} account(s) configured for live trading`);
+    }
+  } catch (err) {
+    console.error(`[startup] ${err.message}`);
+    process.exit(1);
+  }
+
+  // Auto-fetch real wallet balances from CoinSwitch for REAL-mode accounts.
+  async function syncAccountBalances(account) {
+    if (account.broker !== 'coinswitch' || account.mode !== 'REAL') return;
+    const adapter = getRealAdapter(account);
+    if (!adapter) return;
+
+    // In-flight dedup: return existing promise if a sync for this account is already running
+    const inflight = balanceInflight.get(account.id);
+    if (inflight) return inflight;
+
+    // TTL cache: skip exchange call if we have fresh data
+    const cached = balanceCache.get(account.id);
+    if (cached && Date.now() - cached.ts < BALANCE_TTL_MS) {
+      applyBalanceCache(account, cached.data);
+      return cached.data;
+    }
+
+    const promise = (async () => {
+      try {
+        const info = await adapter.getAccountInfo(account.id);
+        balanceCache.set(account.id, { data: info, ts: Date.now() });
+        applyBalanceData(account, info);
+        console.log(`[balance] synced ${account.accountName}`);
+      } catch (err) {
+        console.warn(`[balance] sync failed for ${account.accountName}:`, (err as Error).message);
+      } finally {
+        balanceInflight.delete(account.id);
+      }
+    })();
+    balanceInflight.set(account.id, promise);
+    return promise;
+  }
+
+  function applyBalanceData(account, info) {
+    const usdtHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
+    let freeUSDT = 0, lockedUSDT = 0;
+    for (const b of info.balances) {
+      const existing = holdings.find((h) => h.accountId === account.id && h.asset === b.asset);
+      const rateUSDT = b.asset === 'USDT' ? 1 : undefined;
+      if (existing) {
+        existing.free = b.free; existing.locked = b.locked; existing.total = b.total;
+        existing.rateUSDT = rateUSDT ?? existing.rateUSDT;
+        existing.valueUSDT = rateUSDT ? Number((b.total * rateUSDT).toFixed(2)) : existing.valueUSDT;
+      } else {
+        holdings.push({
+          accountId: account.id, broker: account.broker, asset: b.asset, name: b.asset,
+          free: b.free, locked: b.locked, total: b.total,
+          rateUSDT: rateUSDT ?? 0, valueUSDT: rateUSDT ? Number((b.total * rateUSDT).toFixed(2)) : 0,
+        });
+      }
+      if (b.asset === 'USDT') { freeUSDT = b.free; lockedUSDT = b.locked; }
+    }
+    if (usdtHolding) {
+      account.availableMarginUSDT = freeUSDT;
+      account.totalEquityUSDT = freeUSDT + lockedUSDT;
+      usdtHolding.free = freeUSDT; usdtHolding.locked = lockedUSDT; usdtHolding.total = freeUSDT + lockedUSDT;
+      usdtHolding.valueUSDT = freeUSDT + lockedUSDT;
+    }
+  }
+
+  function applyBalanceCache(account, info) {
+    const usdtHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
+    let freeUSDT = 0, lockedUSDT = 0;
+    for (const b of info.balances) {
+      if (b.asset === 'USDT') { freeUSDT = b.free; lockedUSDT = b.locked; }
+    }
+    if (usdtHolding) {
+      account.availableMarginUSDT = freeUSDT;
+      account.totalEquityUSDT = freeUSDT + lockedUSDT;
+      usdtHolding.free = freeUSDT; usdtHolding.locked = lockedUSDT; usdtHolding.total = freeUSDT + lockedUSDT;
+      usdtHolding.valueUSDT = freeUSDT + lockedUSDT;
+    }
+  }
+
+  // Refresh balances concurrently for all REAL-mode accounts on startup.
+  await Promise.all(accounts.filter((a) => a.broker === 'coinswitch' && a.mode === 'REAL').map((a) => syncAccountBalances(a)));
+
+  // Refresh balances every 60 seconds for REAL-mode accounts (concurrent, with TTL cache).
+  setInterval(async () => {
+    await Promise.all(accounts.filter((a) => a.broker === 'coinswitch' && a.mode === 'REAL').map((a) => syncAccountBalances(a)));
+  }, 60_000).unref();
+
+  // Connect real-time order/fill WebSocket streams for REAL-mode accounts.
+  for (const a of accounts) {
+    if (a.mode === 'REAL') {
+      const adapter = getRealAdapter(a);
+      if (adapter && !adapter.isConnected(a.id)) {
+        try {
+          await adapter.connectUserStream(a.id);
+          console.log(`[stream] connected user stream for ${a.accountName} (${a.broker})`);
+        } catch (err) {
+          console.warn(`[stream] failed to connect user stream for ${a.accountName}:`, (err as Error).message);
+        }
+      }
+    }
+  }
+
   startBotLoop();
   startPriceFeed();
   setInterval(releaseFinishedBotSymbols, 5000).unref();
@@ -1558,4 +1948,7 @@ async function startServer() {
   });
 }
 
-if (!process.env.QUANTA_TEST) startServer();
+if (!process.env.QUANTA_TEST) startServer().catch((err) => {
+  console.error(`[startup] ${err.message}`);
+  process.exit(1);
+});

@@ -1,5 +1,6 @@
-// Optional state persistence: set STATE_FILE=/path/state.json to survive restarts.
-// API keys/secrets are never written to disk.
+// State persistence: set STATE_FILE=/path/state.json to survive restarts.
+// API keys/secrets are stored as-is in this file — fine for local-only use;
+// never commit real keys (STATE_FILE should not be committed).
 // Pure spot trading — no futures, no leverage, no funding.
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
@@ -24,7 +25,13 @@ export function loadState(file) {
   for (const [key, arr] of Object.entries(ARRAYS)) {
     if (!Array.isArray(data[key])) continue;
     arr.length = 0;
-    arr.push(...data[key].map((x) => (key === 'accounts' ? { apiKey: '', apiSecret: '', ...x } : x)));
+    if (key === 'accounts') {
+      for (const x of data[key]) {
+        arr.push({ apiKey: '', apiSecret: '', ...x });
+      }
+    } else {
+      arr.push(...data[key]);
+    }
   }
   if (data.mirrorConfig) Object.assign(mirrorConfig, data.mirrorConfig);
   if (Array.isArray(data.bots)) { botsState.bots.length = 0; botsState.bots.push(...data.bots); }
