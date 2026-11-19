@@ -33,6 +33,7 @@ import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmount
 import { feePct as feeFor, feeRates, executionCost, slippageConfig } from './server/costs.js';
 import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
 import { halalMarket, isHalalSymbol } from './server/halal.js';
+import { startPoller } from './server/poller.js';
 import {
   feedStatus,
   getLiveTop100MomentumCoins,
@@ -1881,6 +1882,7 @@ async function startServer() {
   }
 
   startBotLoop();
+  startPoller();
   startPriceFeed();
   setInterval(releaseFinishedBotSymbols, 5000).unref();
   // Containers (Render/Docker) must listen on all interfaces; local dev stays on loopback
