@@ -99,7 +99,8 @@ function sanitizeAdapterError(err) {
 /** Resolve a finite reference price for a mirror order. MARKET orders adapted to LIMIT
  *  use the live price as a marketable limit, falling back to the last known price. */
 function resolveRefPrice(masterOrder, liveIndex) {
-  if (masterOrder.orderType === 'LIMIT' && masterOrder.price != null) {
+  const orderType = masterOrder.type || masterOrder.orderType;
+  if (orderType === 'LIMIT' && masterOrder.price != null) {
     return Number(masterOrder.price);
   }
   if (liveIndex) {
@@ -117,9 +118,9 @@ function resolveRefPrice(masterOrder, liveIndex) {
 /** Build a mirror order object for a replica, without filling it. */
 function buildMirrorOrder(replicaAcc, masterOrder, multiplier, refPrice) {
   const replicaSize = Number((Number(masterOrder.size) * multiplier).toFixed(8));
-  let repOrderType = masterOrder.orderType;
+  let repOrderType = masterOrder.type || masterOrder.orderType;
   let adaptationNote = '';
-  if (replicaAcc.broker === 'coinswitch' && replicaAcc.segment === 'SPOT' && masterOrder.orderType === 'MARKET') {
+  if (replicaAcc.broker === 'coinswitch' && replicaAcc.segment === 'SPOT' && repOrderType === 'MARKET') {
     repOrderType = 'LIMIT';
     adaptationNote = 'Adapted MARKET order to LIMIT for CoinSwitch Spot compliance.';
   }
@@ -453,7 +454,7 @@ export async function pollOnce() {
         const local = ordersByExchangeId.get(master.id)?.get(eo.orderId);
         if (!p && !local) {
           await mirrorAction(master, eo, 'new', null, liveIndex);
-        } else if (p && (p.status !== eo.status || p.price !== eo.price || p.size !== eo.size)) {
+        } else if (p && (p.status !== normalizeStatus(eo.status) || p.price !== eo.price || p.size !== eo.size)) {
           await mirrorAction(master, eo, 'modify', p, liveIndex);
         }
       } catch (err) {
@@ -496,3 +497,6 @@ export function stopPoller() {
 }
 
 export { pollOnce as pollOrders };
+
+// Exported for testing: inject mock adapters and reset poll state between tests.
+export { getAdapter, lastPolled, adapters };
