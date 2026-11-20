@@ -17,6 +17,14 @@ export default function Trades({ accounts, activeAccountId }) {
   const [loading, setLoading] = useState(false);
   const [actionNotice, setActionNotice] = useState(null);
 
+  // Pagination state
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [ordersLimit, setOrdersLimit] = useState(50);
+  const [ordersPagination, setOrdersPagination] = useState({ total: 0, totalPages: 1, page: 1, limit: 50, hasMore: false });
+  const [tradesPage, setTradesPage] = useState(1);
+  const [tradesLimit, setTradesLimit] = useState(50);
+  const [tradesPagination, setTradesPagination] = useState({ total: 0, totalPages: 1, page: 1, limit: 50, hasMore: false });
+
   // Modify Modal State
   const [editingOrder, setEditingOrder] = useState(null);
   const [editPrice, setEditPrice] = useState('');
@@ -27,11 +35,19 @@ export default function Trades({ accounts, activeAccountId }) {
     setLoading(true);
     try {
       const [ordRes, trdRes] = await Promise.all([
-        fetch('/api/orders'),
-        fetch('/api/trades'),
+        fetch(`/api/orders?page=${ordersPage}&limit=${ordersLimit}`),
+        fetch(`/api/trades?page=${tradesPage}&limit=${tradesLimit}`),
       ]);
-      if (ordRes.ok) setOrders(await ordRes.json());
-      if (trdRes.ok) setTrades(await trdRes.json());
+      if (ordRes.ok) {
+        const data = await ordRes.json();
+        setOrders(Array.isArray(data) ? data : data.orders);
+        if (!Array.isArray(data)) setOrdersPagination({ total: data.total, totalPages: data.totalPages, page: data.page, limit: data.limit, hasMore: data.hasMore });
+      }
+      if (trdRes.ok) {
+        const data = await trdRes.json();
+        setTrades(Array.isArray(data) ? data : data.trades);
+        if (!Array.isArray(data)) setTradesPagination({ total: data.total, totalPages: data.totalPages, page: data.page, limit: data.limit, hasMore: data.hasMore });
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -50,7 +66,7 @@ export default function Trades({ accounts, activeAccountId }) {
       isMounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [ordersPage, ordersLimit, tradesPage, tradesLimit]);
 
   const handleCancelOrder = async (orderId, brokerName) => {
     try {
@@ -374,6 +390,66 @@ export default function Trades({ accounts, activeAccountId }) {
           </div>
         </div>
       )}
+
+      {/* Pagination Controls */}
+      <div className="flex items-center justify-between gap-4 p-4 bg-slate-900 border-t border-slate-800 rounded-b-xl">
+        <div className="flex items-center gap-4 text-xs text-slate-400">
+          {viewTab === 'trades' && (
+            <>
+              <span>Trades Page {tradesPagination.page} of {tradesPagination.totalPages}</span>
+              <button
+                onClick={() => setTradesPage((p) => Math.max(p - 1, 1))}
+                disabled={tradesPage <= 1}
+                className="px-2 py-1 text-xs font-medium rounded hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                ← Prev
+              </button>
+              <button
+                onClick={() => setTradesPage((p) => (p < tradesPagination.totalPages ? p + 1 : p))}
+                disabled={!tradesPagination.hasMore}
+                className="px-2 py-1 text-xs font-medium rounded hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next →
+              </button>
+            </>
+          )}
+          {viewTab !== 'trades' && (
+            <>
+              <span>Orders Page {ordersPage} of {ordersPagination.totalPages}</span>
+              <button
+                onClick={() => setOrdersPage((p) => Math.max(p - 1, 1))}
+                disabled={ordersPage <= 1}
+                className="px-2 py-1 text-xs font-medium rounded hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                ← Prev
+              </button>
+              <button
+                onClick={() => setOrdersPage((p) => (p < ordersPagination.totalPages ? p + 1 : p))}
+                disabled={!ordersPagination.hasMore}
+                className="px-2 py-1 text-xs font-medium rounded hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next →
+              </button>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <span className="font-mono">{viewTab === 'trades' ? tradesPagination.total : ordersPagination.total} items</span>
+          <select
+            value={viewTab === 'trades' ? tradesLimit : ordersLimit}
+            onChange={(e) => {
+              const val = Number(e.target.value);
+              if (viewTab === 'trades') setTradesLimit(val);
+              else setOrdersLimit(val);
+            }}
+            className="bg-transparent text-slate-300 focus:outline-none cursor-pointer"
+          >
+            <option value="25">25/page</option>
+            <option value="50">50/page</option>
+            <option value="100">100/page</option>
+          </select>
+        </div>
+      </div>
 
       {/* Modify Modal */}
       {editingOrder && (

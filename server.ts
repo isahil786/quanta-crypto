@@ -391,6 +391,35 @@ app.post('/api/accounts', (req, res) => {
   }
 });
 
+app.patch('/api/accounts/:id/mode', (req, res) => {
+  const { mode } = req.body;
+  const account = accounts.find((a) => a.id === req.params.id);
+  if (!account) return res.status(404).json({ error: 'Account not found' });
+
+  if (!mode || !['PAPER', 'REAL'].includes(mode)) {
+    return res.status(400).json({ error: "mode must be 'PAPER' or 'REAL'" });
+  }
+
+  if (mode === 'REAL') {
+    if (!account.apiKey || !account.apiSecret) {
+      return res.status(400).json({ error: 'REAL mode requires both apiKey and apiSecret on the account.' });
+    }
+    if (account.apiKey.startsWith('REPLACE_WITH') || account.apiSecret.startsWith('REPLACE_WITH')) {
+      return res.status(400).json({ error: 'REAL mode requires real API credentials, not placeholders.' });
+    }
+  }
+
+  const prevMode = account.mode;
+  account.mode = mode;
+  res.json({
+    success: true,
+    accountId: account.id,
+    accountName: account.accountName,
+    previousMode: prevMode,
+    currentMode: account.mode,
+  });
+});
+
 app.post('/api/accounts/test-connection', async (req, res) => {
   const { accountId, segment: bodySegment } = req.body;
   const stored = accountId ? accounts.find((a) => a.id === accountId) : null;
@@ -624,7 +653,7 @@ app.post('/api/backtest/optimize', async (req, res) => {
 // 4. Orders & Execution (Executing at Live Market Prices)
 // -------------------------------------------------------------
 app.get('/api/orders', (req, res) => {
-  const { accountId, broker, status } = req.query;
+  const { accountId, broker, status, page, limit } = req.query;
   let filtered = [...orders];
 
   if (accountId) {
@@ -637,7 +666,23 @@ app.get('/api/orders', (req, res) => {
     filtered = filtered.filter((o) => o.status === status);
   }
 
-  res.json(filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
+  filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const pageNum = Math.max(Number(page || 1), 1);
+  const limitNum = Math.min(Math.max(Number(limit || 50), 1), 500);
+  const total = filtered.length;
+  const totalPages = Math.ceil(total / limitNum) || 1;
+  const start = (pageNum - 1) * limitNum;
+  const paged = filtered.slice(start, start + limitNum);
+
+  res.json({
+    orders: paged,
+    page: pageNum,
+    limit: limitNum,
+    total,
+    totalPages,
+    hasMore: pageNum < totalPages,
+  });
 });
 
 app.post('/api/orders', async (req, res) => {
@@ -965,6 +1010,8 @@ app.post('/api/safety/exposure-limits', (req, res) => {
 });
 
 // -------------------------------------------------------------
+// 10. Trades
+// -------------------------------------------------------------
 // 5. Trades, Positions & Holdings (Updated against Live Rates)
 // -------------------------------------------------------------
 // Execution-cost model in force (fees per broker, slippage) so the UI can show it
@@ -976,7 +1023,33 @@ app.get('/api/costs', (_req, res) => {
 });
 
 app.get('/api/trades', (req, res) => {
-  res.json(trades);
+  const { accountId, broker, page, limit } = req.query;
+  let filtered = [...trades];
+
+  if (accountId) {
+    filtered = filtered.filter((o) => o.accountId === accountId);
+  }
+  if (broker) {
+    filtered = filtered.filter((o) => o.broker === broker);
+  }
+
+  filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const pageNum = Math.max(Number(page || 1), 1);
+  const limitNum = Math.min(Math.max(Number(limit || 50), 1), 500);
+  const total = filtered.length;
+  const totalPages = Math.ceil(total / limitNum) || 1;
+  const start = (pageNum - 1) * limitNum;
+  const paged = filtered.slice(start, start + limitNum);
+
+  res.json({
+    trades: paged,
+    page: pageNum,
+    limit: limitNum,
+    total,
+    totalPages,
+    hasMore: pageNum < totalPages,
+  });
 });
 
 app.get('/api/positions', async (req, res) => {
