@@ -28,7 +28,6 @@ import {
   trades,
   positions,
   holdings,
-  gttRules,
   mirrorConfig,
 } from './server/state.js';
 import { uid, mask, isPositiveNumber } from './server/util.js';
@@ -473,7 +472,7 @@ app.delete('/api/accounts/:id', (req, res) => {
   // Remove everything that referenced the account
   const drop = (arr) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i].accountId === removed.id) arr.splice(i, 1); };
   for (const o of orders) if (o.accountId === removed.id && o.status === 'OPEN') { releaseOrder(removed, o); o.status = 'CANCELLED'; o.notes = 'Account removed'; }
-  [positions, holdings, gttRules].forEach(drop);
+  [positions, holdings].forEach(drop);
   for (const b of botsState.bots) if (b.accountId === removed.id && (b.status === 'RUNNING' || b.status === 'PAUSED')) { b.status = 'CANCELLED'; releaseBotSymbol(b); }
   mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
   res.json({ success: true, removedId: removed.id });
@@ -1063,65 +1062,6 @@ app.get('/api/holdings', async (req, res) => {
   } catch (err) {
     res.json(holdings);
   }
-});
-
-// -------------------------------------------------------------
-// 6. GTT / Conditional Trigger Orders
-// -------------------------------------------------------------
-app.get('/api/gtt', (req, res) => {
-  res.json(gttRules);
-});
-
-app.post('/api/gtt', (req, res) => {
-  const { accountId, symbol, type, triggerPrice, condition, side, size, targetPrice, stopLossPrice, trailingStopPercent } = req.body;
-  const account = accounts.find((a) => a.id === accountId);
-  if (!account) {
-    return res.status(404).json({ error: 'Account not found' });
-  }
-
-  // Capability Gate: GTT / bracket rules are evaluated locally by the bots engine,
-  // so they work for any broker including CoinSwitch Spot.
-  if (!symbol || !VALID_SIDES.has(String(side || 'SELL').toUpperCase())) {
-    return res.status(400).json({ error: 'symbol and a valid side (BUY/SELL) are required' });
-  }
-  if (!isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
-  if (condition !== undefined && !['ABOVE', 'BELOW'].includes(condition)) return res.status(400).json({ error: 'condition must be ABOVE or BELOW' });
-  if (!isPositiveNumber(triggerPrice) && !isPositiveNumber(targetPrice) && !isPositiveNumber(stopLossPrice) && !isPositiveNumber(trailingStopPercent)) {
-    return res.status(400).json({ error: 'Provide a triggerPrice, targetPrice, stopLossPrice or trailingStopPercent' });
-  }
-
-  const newRule = {
-    id: uid('gtt'),
-    accountId: account.id,
-    broker: account.broker,
-    symbol,
-    type: type || 'BRACKET_OCO',
-    triggerPrice: isPositiveNumber(triggerPrice) ? Number(triggerPrice) : undefined,
-    condition: condition || 'ABOVE',
-    side: String(side || 'SELL').toUpperCase(),
-    size: Number(size),
-    targetPrice: targetPrice ? Number(targetPrice) : undefined,
-    stopLossPrice: stopLossPrice ? Number(stopLossPrice) : undefined,
-    trailingStopPercent: isPositiveNumber(trailingStopPercent) ? Number(trailingStopPercent) : undefined,
-    status: 'ACTIVE',
-    createdAt: new Date().toISOString(),
-    notes: `Conditional trigger rule (${account.broker})`,
-  };
-
-  gttRules.unshift(newRule);
-  res.status(201).json(newRule);
-});
-
-app.delete('/api/gtt/:id', (req, res) => {
-  const index = gttRules.findIndex((g) => g.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'GTT rule not found' });
-  }
-  if (gttRules[index].status !== 'ACTIVE') {
-    return res.status(409).json({ error: `Rule is already ${gttRules[index].status}` });
-  }
-  gttRules[index].status = 'CANCELLED';
-  res.json({ success: true, message: 'GTT rule cancelled', rule: gttRules[index] });
 });
 
 // -------------------------------------------------------------
@@ -1918,7 +1858,7 @@ async function startServer() {
     });
   }
 
-  // Persist state to disk so a restart doesn't wipe orders, positions, GTT rules,
+  // Persist state to disk so a restart doesn't wipe orders, positions,
   // mirror config, bots, emergency-stop, and exposure-limit state. Defaults to
   // data/state.json when STATE_FILE is not set.
   const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), 'data', 'state.json');

@@ -3,7 +3,6 @@ import Layout from './components/Layout.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import Trades from './components/Trades.jsx';
 import Positions from './components/Positions.jsx';
-import GttRules from './components/GttRules.jsx';
 import MirrorTrading from './components/MirrorTrading.jsx';
 import Accounts from './components/Accounts.jsx';
 import Screener from './components/Screener.jsx';
@@ -240,13 +239,6 @@ export default function App() {
 
       {activeTab === 'positions' && (
         <Positions
-          accounts={accounts}
-          activeAccountId={activeAccountId}
-        />
-      )}
-
-      {activeTab === 'gtt' && (
-        <GttRules
           accounts={accounts}
           activeAccountId={activeAccountId}
         />

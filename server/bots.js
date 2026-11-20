@@ -4,7 +4,7 @@
 
 import { getLivePriceIndex, isFeedStale, subscribeSymbol } from './binance.js';
 import { feePct as feeFor, executionCost } from './costs.js';
-import { orders, trades, gttRules, accounts, positions } from './state.js';
+import { orders, trades, accounts, positions } from './state.js';
 import { BROKERS } from './brokers/index.js';
 import { checkMargin, settleOrderFill, baseInventory, releaseOrder } from './positions.js';
 import { shouldMirror, mirrorFilledOrder } from './mirror.js';
@@ -719,58 +719,6 @@ function runQSL(bot, livePrice) {
   markUnrealised(bot, livePrice); // after fills, so the UI shows current PnL
 }
 
-/** Evaluate GTT / conditional rules against live prices. */
-function runGtt(liveCoins) {  // liveCoins: Map<symbol, coin>
-  for (const rule of gttRules) {
-    if (rule.status !== 'ACTIVE') continue;
-    const coin = liveCoins.get(rule.symbol);
-    if (!coin) continue;
-    const p = coin.price;
-    let reason = null;
-
-    // Trailing stop: track peak price since rule activation; exit when price
-    // drops X% from peak (for SELL-side rules exiting a long) or rises X% from
-    // trough (for BUY-side rules exiting a short).
-    if (rule.trailingStopPercent) {
-      const trail = Number(rule.trailingStopPercent);
-      if (isPositiveNumber(trail) && trail > 0) {
-        const longExit = rule.side !== 'BUY';
-        if (!rule._peakPrice || (longExit ? p > rule._peakPrice : p < rule._peakPrice)) {
-          rule._peakPrice = p;
-        }
-        const peak = rule._peakPrice;
-        const dropPct = longExit ? ((peak - p) / peak) * 100 : ((p - peak) / peak) * 100;
-        if (dropPct >= trail) {
-          reason = 'TRAILING_STOP';
-        }
-      }
-    }
-
-    if (!reason && (rule.targetPrice || rule.stopLossPrice)) {
-      const longExit = rule.side !== 'BUY';
-      if (rule.targetPrice && (longExit ? p >= rule.targetPrice : p <= rule.targetPrice)) reason = 'TARGET';
-      else if (rule.stopLossPrice && (longExit ? p <= rule.stopLossPrice : p >= rule.stopLossPrice)) reason = 'STOP_LOSS';
-    }
-    if (!reason && rule.triggerPrice) {
-      if (rule.condition === 'BELOW' ? p <= rule.triggerPrice : p >= rule.triggerPrice) reason = 'TRIGGER';
-    }
-    if (!reason) continue;
-    const res = executeFill({
-      bot: { id: rule.id, accountId: rule.accountId, broker: rule.broker, symbol: rule.symbol, logs: [] },
-      side: rule.side, orderType: 'MARKET', price: p, size: rule.size, tag: 'gtt',
-    });
-    rule.triggeredAt = new Date().toISOString();
-    rule.triggerReason = reason;
-    rule.triggeredPrice = p;
-    if (res.ok) {
-      rule.status = 'TRIGGERED';
-    } else {
-      rule.status = 'REJECTED';
-      rule.notes = `Triggered (${reason}) but the order was rejected: ${res.reason}`;
-    }
-  }
-}
-
 /** Fill resting LIMIT orders when the live price reaches them (BUY at/below, SELL at/above). */
 function runOpenOrders(liveCoins) {
   // Iterate a copy: mirroring unshifts replica orders into `orders` while we loop
@@ -839,10 +787,9 @@ async function runCycleInner() {
   if (isEmergencyStopActive()) return;
 
   const running = botsState.bots.filter((b) => b.status === 'RUNNING');
-  const hasGtt = gttRules.some((r) => r.status === 'ACTIVE');
   const hasOpenOrders = orders.some((o) => o.status === 'OPEN');
   const hasExits = positions.length > 0; // TP/SL checks
-  if (running.length === 0 && !hasGtt && !hasOpenOrders && !hasExits) return;
+  if (running.length === 0 && !hasOpenOrders && !hasExits) return;
 
   let liveCoins;
   try {
@@ -879,7 +826,6 @@ async function runCycleInner() {
       log(bot, `Bot halted by internal error: ${err.message}`);
     }
   }
-  if (hasGtt) runGtt(liveCoins);
   if (hasOpenOrders) runOpenOrders(liveCoins);
   if (hasExits) runPositionExits(liveCoins);
 }

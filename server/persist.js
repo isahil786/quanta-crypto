@@ -4,15 +4,15 @@
 // Pure spot trading — no futures, no leverage, no funding.
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
-import { accounts, orders, trades, positions, holdings, gttRules, mirrorConfig, emergencyStop, exposureLimits } from './state.js';
+import { accounts, orders, trades, positions, holdings, mirrorConfig, emergencyStop, exposureLimits } from './state.js';
 import { botsState } from './bots.js';
 
-const ARRAYS = { accounts, orders, trades, positions, holdings, gttRules };
+const ARRAYS = { accounts, orders, trades, positions, holdings };
 
 function snapshot() {
   return JSON.stringify({
     accounts: accounts.map(({ apiKey, apiSecret, ...rest }) => rest),
-    orders, trades, positions, holdings, gttRules,
+    orders, trades, positions, holdings,
     mirrorConfig,
     emergencyStop,
     exposureLimits,

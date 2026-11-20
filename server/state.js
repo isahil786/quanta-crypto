@@ -15,8 +15,6 @@ export const positions = [];
 
 export const holdings = [];
 
-export const gttRules = [];
-
 export const mirrorConfig = {
   enabled: true,
   masterAccountId: null,
