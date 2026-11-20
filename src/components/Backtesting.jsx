@@ -4,19 +4,15 @@ import {
   Play,
   RotateCcw,
   TrendingUp,
-  ArrowDownUp,
   CheckCircle2,
   AlertCircle,
   Sliders,
-  DollarSign,
   Activity,
   Layers,
   Award,
-  Zap,
   Clock,
   ArrowRight,
   ShieldAlert,
-  Percent,
   Bot,
 } from 'lucide-react';
 
@@ -28,13 +24,13 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
   const [gridUpper, setGridUpper] = useState('');
   const [gridCount, setGridCount] = useState('14');
   const [gridMode, setGridMode] = useState('GEOMETRIC'); // 'ARITHMETIC' | 'GEOMETRIC'
-  const [feeRate, setFeeRate] = useState('0.0005'); // 0.05%
+  const [feeRate] = useState('0.0005'); // 0.05%
 
   const [loading, setLoading] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [backtestResult, setBacktestResult] = useState(null);
   const [optimizedStrategies, setOptimizedStrategies] = useState(null);
-  const [winningStrategy, setWinningStrategy] = useState(null);
+  const [, setWinningStrategy] = useState(null);
   const [notice, setNotice] = useState(null);
   const [activeView, setActiveView] = useState('summary'); // 'summary', 'strategies', 'rungs', 'trades'
 
@@ -859,7 +855,6 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
 
           <div className="grid grid-cols-1 gap-1.5 font-mono text-xs">
             {backtestResult.rungs?.map((rung) => {
-              const hasFills = (rung.fillsCount || 0) > 0;
               const hasProfit = (rung.profitCaptured || 0) > 0;
               const isSell = rung.side === 'SELL';
 

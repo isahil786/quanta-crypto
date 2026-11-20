@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  ArrowDownUp,
   XCircle,
   Edit2,
   CheckCircle2,
@@ -9,7 +8,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-export default function Trades({ accounts, activeAccountId }) {
+export default function Trades() {
   const [orders, setOrders] = useState([]);
   const [trades, setTrades] = useState([]);
   const [viewTab, setViewTab] = useState('open'); // 'open', 'trades', 'all'
@@ -318,7 +317,6 @@ export default function Trades({ accounts, activeAccountId }) {
                   </tr>
                 ) : (
                   filteredOrders.map((o) => {
-                    const isModifiable = o.status === 'OPEN';
                     return (
                       <tr key={o.id} className="hover:bg-slate-800/30 transition-colors">
                         <td className="py-2.5 px-4 font-sans text-slate-300 font-medium">{o.id}</td>

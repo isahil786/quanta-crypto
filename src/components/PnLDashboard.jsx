@@ -6,9 +6,10 @@ import {
   RefreshCw,
   Filter,
   PieChart,
+  Clock,
 } from 'lucide-react';
 
-export default function PnLDashboard({ accounts, activeAccountId }) {
+export default function PnLDashboard() {
   const [positions, setPositions] = useState([]);
   const [trades, setTrades] = useState([]);
   const [holdings, setHoldings] = useState([]);

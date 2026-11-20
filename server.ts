@@ -90,7 +90,21 @@ const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('-
 // Behind Render/Docker proxies every client shares the proxy's IP unless we trust X-Forwarded-For,
 // which would put the whole world into ONE rate-limit bucket. TRUST_PROXY=<hops> overrides the default.
 app.set('trust proxy', Number(process.env.TRUST_PROXY ?? (process.env.NODE_ENV === 'production' ? 1 : 0)));
-app.use(helmet({ contentSecurityPolicy: false })); // CSP off: Vite dev injects inline scripts
+// CSP is relaxed only in dev (Vite injects inline scripts + HMR websocket); production gets a strict policy.
+app.use(helmet({
+  contentSecurityPolicy: isDev ? false : {
+    useDefaults: true,
+    directives: {
+      'default-src': ["'self'"],
+      'script-src': ["'self'"],
+      'style-src': ["'self'", "'unsafe-inline'"], // React inline style attributes
+      'img-src': ["'self'", 'data:'],
+      'connect-src': ["'self'", 'ws:', 'wss:'],
+      'object-src': ["'none'"],
+      'frame-ancestors': ["'none'"],
+    },
+  },
+}));
 app.use(express.json({ limit: '100kb' }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_PER_MIN) || 600, standardHeaders: true, legacyHeaders: false }));
 

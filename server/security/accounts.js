@@ -59,7 +59,7 @@ export function loadSeedAccounts(filePath = DEFAULT_ACCOUNTS_FILE) {
     data = JSON.parse(readFileSync(filePath, 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT') return [];
-    throw new Error(`Failed to read accounts file ${filePath}: ${err.message}`);
+    throw new Error(`Failed to read accounts file ${filePath}: ${err.message}`, { cause: err });
   }
   const accounts = Array.isArray(data) ? data : data.accounts || [];
   return accounts.map((raw, i) => parseSeedAccount(raw, i));

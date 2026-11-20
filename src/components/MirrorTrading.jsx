@@ -2,13 +2,10 @@ import React, { useState, useEffect } from 'react';
 import {
   Cpu,
   Power,
-  Sliders,
   CheckCircle2,
   AlertCircle,
   Play,
-  ArrowRight,
   Shield,
-  Clock,
   History,
   Download,
 } from 'lucide-react';

@@ -17,10 +17,10 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState('');
   const [tickers, setTickers] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
-  const [orderRefreshCount, setOrderRefreshCount] = useState(0);
+  const [, setOrderRefreshCount] = useState(0);
   const [feedOk, setFeedOk] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
-  const [wsError, setWsError] = useState(null);
+  const [, setWsError] = useState(null);
 
   const wsUrl = useRef(null);
   const symbolsRef = useRef([]);

@@ -1,8 +1,8 @@
 // Safety module: emergency stop, order reconciliation, exposure limits.
-import { accounts, orders, mirrorConfig, emergencyStop, exposureLimits } from './state.js';
+import { accounts, orders, emergencyStop, exposureLimits } from './state.js';
 import { getAdapter, getMasterAccounts } from './poller.js';
 import { releaseOrder } from './positions.js';
-import { executionCost } from './costs.js';
+import { uid } from './util.js';
 
 /** Reduce an adapter error to a safe generic reason (no raw response bodies/headers)
  *  suitable for persisting in mirror logs. */
@@ -139,7 +139,6 @@ export async function reconcileOrders() {
     }
 
     const exchangeIds = new Set(exchangeOrders.map((o) => o.orderId));
-    const exchangeById = new Map(exchangeOrders.map((o) => [o.orderId, o]));
 
     // Local OPEN orders for this master
     const localOpen = orders.filter((o) => o.accountId === master.id && o.status === 'OPEN');
@@ -150,21 +149,43 @@ export async function reconcileOrders() {
         // Local says OPEN but exchange doesn't have it in open orders.
         // It may have been filled externally (removed from open orders) or cancelled.
         // Query the exchange order directly to determine its true status before marking CANCELLED.
-        let exOrderStatus = null;
+        let exOrderStatus;
+        let exOrder = null;
         try {
-          const exOrder = await adapter.getOrder(master.id, exId);
+          exOrder = await adapter.getOrder(master.id, exId);
           exOrderStatus = normalizeStatus(exOrder.status);
         } catch {
           // Order not found on exchange at all — treat as cancelled.
           exOrderStatus = 'CANCELLED';
         }
 
-        if (exOrderStatus === 'FILLED' || exOrderStatus === 'PARTIALLY_FILLED') {
+        if (exOrderStatus === 'PARTIALLY_FILLED') {
+          // Partially filled but the exchange still reports it as live: keep the remainder
+          // OPEN and only release the reservation for the part that has already filled.
+          const prevFilled = Number(local.filledSize || 0);
+          const filled = Math.min(Number(exOrder.filledSize || 0), Number(local.size));
+          const prevRemaining = Number(local.size) - prevFilled;
+          const remaining = Number(local.size) - filled;
+          if (filled > prevFilled && prevRemaining > 0) {
+            const keep = remaining / prevRemaining;
+            local.reservedUSDT = Number(((local.reservedUSDT || 0) * keep).toFixed(6));
+            local.reservedBase = Number(((local.reservedBase || 0) * keep).toFixed(10));
+            local.filledSize = filled;
+            local.fillPrice = exOrder.fillPrice ?? local.price;
+            local.notes = (local.notes || '') + ' | Reconciled: partially filled on exchange';
+            actions.push({
+              type: 'PARTIALLY_FILLED_EXTERNALLY',
+              orderId: local.id,
+              accountId: master.id,
+              details: `Order ${exId} partially filled (${filled}/${local.size}); remainder kept OPEN`,
+            });
+          }
+        } else if (exOrderStatus === 'FILLED') {
           // Order filled externally — mark FILLED and emit a trade record.
           const fillPrice = exOrder.fillPrice ?? local.price;
           const fillSize = Number(exOrder.filledSize || local.size);
           releaseOrder(master, local);
-          local.status = exOrderStatus;
+          local.status = 'FILLED';
           local.filledSize = fillSize;
           local.fillPrice = fillPrice;
           local.notes = (local.notes || '') + ' | Reconciled: filled externally on exchange';
@@ -172,7 +193,7 @@ export async function reconcileOrders() {
             type: 'FILLED_EXTERNALLY',
             orderId: local.id,
             accountId: master.id,
-            details: `Order ${exId} filled externally on exchange; marked ${exOrderStatus}`,
+            details: `Order ${exId} filled externally on exchange; marked FILLED`,
           });
         } else {
           // Cancelled or not found — mark CANCELLED.

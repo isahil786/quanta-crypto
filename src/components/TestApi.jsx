@@ -2,12 +2,8 @@ import React, { useState } from 'react';
 import {
   Server,
   Play,
-  CheckCircle2,
   AlertCircle,
-  Key,
   Shield,
-  Clock,
-  Code,
 } from 'lucide-react';
 
 export default function TestApi() {

@@ -4,10 +4,7 @@ import {
   Wallet,
   CheckCircle2,
   AlertCircle,
-  TrendingUp,
-  TrendingDown,
   RefreshCw,
-  XCircle,
 } from 'lucide-react';
 
 export default function Positions({ accounts, activeAccountId }) {

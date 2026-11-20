@@ -1,15 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  TrendingUp,
-  TrendingDown,
   AlertCircle,
   CheckCircle2,
   Sliders,
-  ArrowDownUp,
   Clock,
   Zap,
   Search,
-  Activity,
   Flame,
 } from 'lucide-react';
 

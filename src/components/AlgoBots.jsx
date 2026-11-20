@@ -5,22 +5,15 @@ import {
   Pause,
   Square,
   PlusCircle,
-  Flame,
   Activity,
-  Layers,
   CheckCircle2,
   AlertCircle,
-  Clock,
   Trash2,
-  Sliders,
   TrendingUp,
   ShieldCheck,
   RefreshCw,
   Sparkles,
   ArrowDownUp,
-  DollarSign,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 
 // Price formatting that stays readable from BTC (100,123.45) down to sub-cent coins (0.00001234)
@@ -106,7 +99,7 @@ export default function AlgoBots({ accounts, tickers }) {
   const [halalOnly, setHalalOnly] = useState(false);
   const [halalData, setHalalData] = useState({ tradable: [], unavailable: [], listed: 0 });
   const pairPool = halalOnly ? halalData.tradable : tickers.slice(0, 30);
-  const [side, setSide] = useState('BUY');
+  const [side] = useState('BUY');
 
   // TWAP parameters
   const [twapTotalSize, setTwapTotalSize] = useState('1.0');
@@ -116,7 +109,7 @@ export default function AlgoBots({ accounts, tickers }) {
   // Breakout parameters
   const [breakoutTrigger, setBreakoutTrigger] = useState('');
   const [breakoutSize, setBreakoutSize] = useState('0.1');
-  const [breakoutLeverage, setBreakoutLeverage] = useState('5');
+  const [breakoutLeverage] = useState('5');
   const [breakoutTp, setBreakoutTp] = useState('');
   const [breakoutSl, setBreakoutSl] = useState('');
 

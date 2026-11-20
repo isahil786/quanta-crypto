@@ -4,13 +4,8 @@ import {
   PlusCircle,
   Trash2,
   Zap,
-  Key,
-  Lock,
   CheckCircle2,
   AlertCircle,
-  ExternalLink,
-  Cpu,
-  Layers,
 } from 'lucide-react';
 
 export default function Accounts({ accounts, onAccountsUpdated, activeAccountId, setActiveAccountId }) {
