@@ -46,6 +46,7 @@ import {
   setExposureLimits,
   accountExposureUSDT,
   accountOpenOrderCount,
+  normalizeStatus,
 } from './server/safety.js';
 import {
   feedStatus,
@@ -252,7 +253,7 @@ type ExecutionAccountLike = {
   exchange?: string;
 };
 
-function createRealAdapter(account: { id: string; broker: string; apiKey: string; apiSecret: string; segment?: string; exchange?: string }): CoinSwitchAdapter | BinanceAdapter | undefined {
+function createRealAdapter(account: { id: string; broker: string; apiKey: string; apiSecret: string; segment?: string; exchange?: string }, { onDisconnect }: { onDisconnect?: (accountId: string) => void } = {}): CoinSwitchAdapter | BinanceAdapter | undefined {
   const AdapterClass = ADAPTER_CLASSES[account.broker];
   if (!AdapterClass) return undefined;
   const adapter = new AdapterClass({
@@ -262,9 +263,18 @@ function createRealAdapter(account: { id: string; broker: string; apiKey: string
     apiSecret: account.apiSecret,
     segment: account.segment,
     exchange: account.exchange,
+    onDisconnect,
   });
   adapter.onFill((ev) => applyRealFill(account, ev));
   return adapter;
+}
+
+/** WS fill resilience: when the CoinSwitch WS disconnects, reconcile local orders
+ *  against the exchange to catch any fills that were missed while the socket was down.
+ *  Delegates to the shared reconcileOrders() helper instead of reimplementing the
+ *  open-order vs local-order comparison and terminal-status marking. */
+async function syncFillsAfterDisconnect(account) {
+  await reconcileOrders();
 }
 
 function getRealAdapter(account): CoinSwitchAdapter | BinanceAdapter | undefined {
@@ -272,7 +282,12 @@ function getRealAdapter(account): CoinSwitchAdapter | BinanceAdapter | undefined
   if (!adapter) {
     const creds = accountCredentials(account);
     if (!creds.apiKey || !creds.apiSecret) return undefined;
-    adapter = createRealAdapter({ id: account.id, broker: account.broker, apiKey: creds.apiKey, apiSecret: creds.apiSecret, segment: account.segment, exchange: account.exchange });
+    adapter = createRealAdapter({ id: account.id, broker: account.broker, apiKey: creds.apiKey, apiSecret: creds.apiSecret, segment: account.segment, exchange: account.exchange }, {
+      onDisconnect: (aid) => {
+        const acct = accounts.find((a) => a.id === aid);
+        if (acct) syncFillsAfterDisconnect(acct);
+      },
+    });
     if (adapter) realAdapters.set(account.id, adapter);
   }
   return adapter;
@@ -675,7 +690,8 @@ app.post('/api/orders', async (req, res) => {
         return res.status(400).json({ error: 'Real trading not configured for this account (missing Binance credentials or adapter).' });
       }
       // Pre-trade margin guard: reject if available margin cannot cover notional + fee
-      const refPrice = orderType === 'LIMIT' ? num(req.body.price) : (await getLivePriceIndex()).get(symbol)?.price;
+      const livePair = orderType === 'LIMIT' ? undefined : (await getLivePriceIndex()).get(symbol);
+      const refPrice = orderType === 'LIMIT' ? num(req.body.price) : livePair?.price;
       if (!refPrice || !Number.isFinite(refPrice)) {
         return res.status(400).json({ error: `No live price for ${symbol}; cannot compute order notional.` });
       }
@@ -684,6 +700,19 @@ app.post('/api/orders', async (req, res) => {
       const fee = (orderValue * feePct) / 100;
       if (account.availableMarginUSDT < orderValue + fee) {
         return res.status(400).json({ error: `Insufficient margin: need ${(orderValue + fee).toFixed(2)} USDT, have ${account.availableMarginUSDT.toFixed(2)} USDT.` });
+      }
+
+      // Slippage protection: reject MARKET orders if expected slippage exceeds the max allowed.
+      if (orderType === 'MARKET') {
+        const ex = executionCost({ broker: account.broker, side, refPrice, size, quoteVolume: livePair?.quoteVolume });
+        const maxSlippagePct = Number(process.env.SLIPPAGE_MAX_ORDER_PERCENT ?? 2);
+        if (ex.slippagePct > maxSlippagePct) {
+          return res.status(400).json({
+            error: `Expected slippage ${ex.slippagePct}% exceeds max allowed ${maxSlippagePct}% for MARKET order. Use a LIMIT order instead.`,
+            slippagePct: ex.slippagePct,
+            maxSlippagePct,
+          });
+        }
       }
 
       let placed;
@@ -1866,12 +1895,18 @@ async function startServer() {
     });
   }
 
-  if (process.env.STATE_FILE) {
-    const restored = loadState(process.env.STATE_FILE);
+  // Persist state to disk so a restart doesn't wipe orders, positions, GTT rules,
+  // mirror config, bots, emergency-stop, and exposure-limit state. Defaults to
+  // data/state.json when STATE_FILE is not set.
+  const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), 'data', 'state.json');
+  try {
+    const restored = loadState(stateFile);
     for (const b of botsState.bots) if (b.status === 'RUNNING' || b.status === 'PAUSED') { b._wsCounted = false; trackBotSymbol(b); }
-    const flush = startPersistence(process.env.STATE_FILE);
+    const flush = startPersistence(stateFile);
     for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => { flush(); process.exit(0); });
-    console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${process.env.STATE_FILE}`);
+    console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${stateFile}`);
+  } catch (err) {
+    console.error(`[persist] failed to initialise: ${err.message}`);
   }
 
   // Seed accounts from ACCOUNTS_FILE (user-editable JSON). Credentials are

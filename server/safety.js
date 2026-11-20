@@ -12,14 +12,14 @@ function sanitizeAdapterError(err) {
 }
 
 /** Normalize exchange order status strings to internal values. */
-function normalizeStatus(s) {
+export function normalizeStatus(s) {
   switch (String(s).toUpperCase()) {
     case 'NEW': return 'OPEN';
-    case 'CANCELED': case 'CANCELLED': return 'CANCELLED';
-    case 'PARTIALLY_FILLED': return 'PARTIALLY_FILLED';
-    case 'FILLED': return 'FILLED';
+    case 'CANCELED': case 'CANCELLED': case 'CANCELLATION_RAISED': return 'CANCELLED';
+    case 'PARTIALLY_FILLED': case 'PARTIALLY_EXECUTED': return 'PARTIALLY_FILLED';
+    case 'FILLED': case 'EXECUTED': return 'FILLED';
     case 'REJECTED': return 'REJECTED';
-    case 'EXPIRED': return 'EXPIRED';
+    case 'EXPIRED': case 'EXPIRATION_RAISED': return 'EXPIRED';
     default: return s;
   }
 }

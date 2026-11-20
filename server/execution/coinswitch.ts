@@ -137,7 +137,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
   private socketConnecting = false;
   private socketReconnect: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private account: ExecutionAccount & { exchange?: string }) {}
+  constructor(private account: ExecutionAccount & { exchange?: string, onDisconnect?: (accountId: string) => void }) {}
 
   private get exchange() {
     return this.account.exchange || DEFAULT_EXCHANGE;
@@ -263,6 +263,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
     this.socket.on('disconnect', (reason: string) => {
       this.socketConnecting = false;
       console.warn(`[CoinSwitch WS] disconnected for ${accountId}:`, reason);
+      this.account.onDisconnect?.(accountId);
     });
 
     this.socket.on('connect_error', (err: any) => {
