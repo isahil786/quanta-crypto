@@ -24,6 +24,28 @@ export const mirrorConfig = {
   logs: [],
 };
 
+// ---------------------------------------------------------------
+// Safety: emergency stop / kill-switch state
+// ---------------------------------------------------------------
+export const emergencyStop = {
+  active: false,
+  reason: null,
+  activatedAt: null,
+  activatedBy: null,
+};
+
+// ---------------------------------------------------------------
+// Safety: exposure limits
+// Per-account and per-symbol max USDT exposure caps.
+// Limits are checked before order placement (manual, mirror, bot).
+// ---------------------------------------------------------------
+export const exposureLimits = {
+  enabled: false,
+  perAccountMaxUSDT: null,   // null = unlimited
+  perSymbolMaxUSDT: null,    // null = unlimited
+  perAccountMaxOrders: null, // null = unlimited
+};
+
 function pushSeed(seed) {
   accounts.push(seed);
   holdings.push({

@@ -7,6 +7,7 @@ import { executionCost } from './costs.js';
 import { uid } from './util.js';
 import { CoinSwitchAdapter } from './execution/coinswitch.js';
 import { getLivePriceIndex } from './binance.js';
+import { isEmergencyStopActive } from './safety.js';
 
 const POLL_INTERVAL_MS = 8000;
 let timer = null;
@@ -427,6 +428,9 @@ function buildOrdersByExchangeId() {
 
 /** Poll once: detect new/modified/cancelled orders on master CoinSwitch accounts and mirror. */
 export async function pollOnce() {
+  // Emergency stop: skip all mirroring while active
+  if (isEmergencyStopActive()) return { skipped: true, reason: 'Emergency stop is active' };
+
   const ordersByExchangeId = buildOrdersByExchangeId();
 
   let liveIndex;

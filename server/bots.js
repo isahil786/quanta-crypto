@@ -9,6 +9,7 @@ import { BROKERS } from './brokers/index.js';
 import { checkMargin, settleOrderFill, baseInventory, releaseOrder } from './positions.js';
 import { shouldMirror, mirrorFilledOrder } from './mirror.js';
 import { uid, capList } from './util.js';
+import { isEmergencyStopActive } from './safety.js';
 
 export const botsState = {
   bots: [],
@@ -815,6 +816,9 @@ export async function runBotsBackgroundCycle() {
 }
 
 async function runCycleInner() {
+  // Emergency stop: skip all bot activity
+  if (isEmergencyStopActive()) return;
+
   const running = botsState.bots.filter((b) => b.status === 'RUNNING');
   const hasGtt = gttRules.some((r) => r.status === 'ACTIVE');
   const hasOpenOrders = orders.some((o) => o.status === 'OPEN');

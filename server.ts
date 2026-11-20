@@ -35,6 +35,19 @@ import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
 import { halalMarket, isHalalSymbol } from './server/halal.js';
 import { startPoller } from './server/poller.js';
 import {
+  isEmergencyStopActive,
+  activateEmergencyStop,
+  deactivateEmergencyStop,
+  getEmergencyStopStatus,
+  cancelAllOpenOrders,
+  reconcileOrders,
+  checkExposureLimits,
+  getExposureLimits,
+  setExposureLimits,
+  accountExposureUSDT,
+  accountOpenOrderCount,
+} from './server/safety.js';
+import {
   feedStatus,
   getLiveTop100MomentumCoins,
   getLivePriceIndex,
@@ -610,11 +623,20 @@ app.get('/api/orders', (req, res) => {
 
 app.post('/api/orders', async (req, res) => {
   try {
+    // Emergency stop: reject all new order placement
+    if (isEmergencyStopActive()) {
+      return res.status(409).json({
+        error: 'Emergency stop is active. New order placement is blocked.',
+        emergencyStop: getEmergencyStopStatus(),
+      });
+    }
+
     const { accountId, symbol, tpPrice, slPrice, timeInForce = 'GTC' } = req.body;
     const side = String(req.body.side || '').toUpperCase();
     const orderType = String(req.body.orderType || '').toUpperCase();
     const leverage = req.body.leverage === undefined ? 1 : num(req.body.leverage);
     const size = num(req.body.size);
+    const price = num(req.body.price);
 
     const account = accounts.find((a) => a.id === accountId);
     if (!account) return res.status(404).json({ error: 'Target trading account not found' });
@@ -625,8 +647,17 @@ app.post('/api/orders', async (req, res) => {
     if (!Number.isFinite(leverage) || leverage !== 1) {
       return res.status(400).json({ error: 'leverage must be 1 (spot trading only)' });
     }
-    if (orderType === 'LIMIT' && !isPositiveNumber(req.body.price)) {
+    if (orderType === 'LIMIT' && !isPositiveNumber(price)) {
       return res.status(400).json({ error: 'A positive limit price is required for LIMIT orders' });
+    }
+
+    const refPrice = orderType === 'LIMIT' ? price : null;
+    const orderValue = orderType === 'LIMIT' ? price * size : null;
+
+    // Exposure limits check
+    const expCheck = checkExposureLimits(accountId, symbol, price || 0, size, orderValue);
+    if (!expCheck.ok) {
+      return res.status(403).json({ error: expCheck.reason, exposureLimits: getExposureLimits() });
     }
 
     const brokerId = account.broker;
@@ -836,6 +867,68 @@ app.delete('/api/orders/:id', (req, res) => {
   if (acct) releaseOrder(acct, order); // give the reserved funds back
   order.status = 'CANCELLED';
   res.json({ success: true, message: `Order ${order.id} cancelled successfully`, order });
+});
+
+// -------------------------------------------------------------
+// 4.5. Safety: emergency stop, reconciliation, exposure limits
+// -------------------------------------------------------------
+app.get('/api/safety/status', (_req, res) => {
+  res.json({
+    emergencyStop: getEmergencyStopStatus(),
+    exposureLimits: getExposureLimits(),
+    accounts: accounts.map((a) => ({
+      id: a.id,
+      accountName: a.accountName,
+      broker: a.broker,
+      mode: a.mode,
+      exposureUSDT: accountExposureUSDT(a.id),
+      openOrders: accountOpenOrderCount(a.id),
+    })),
+  });
+});
+
+app.post('/api/safety/emergency-stop', (req, res) => {
+  const { reason } = req.body || {};
+  if (!reason || typeof reason !== 'string') {
+    return res.status(400).json({ error: 'reason is required' });
+  }
+  activateEmergencyStop(reason, 'api-operator');
+  res.json({ success: true, emergencyStop: getEmergencyStopStatus() });
+});
+
+app.post('/api/safety/emergency-stop/cancel-all', async (req, res) => {
+  if (!isEmergencyStopActive()) {
+    return res.status(400).json({ error: 'Emergency stop is not active' });
+  }
+  const { confirmNonce } = req.body || {};
+  const result = await cancelAllOpenOrders(confirmNonce);
+  if (result.error) {
+    return res.status(400).json({ error: result.error, emergencyStop: getEmergencyStopStatus() });
+  }
+  res.json({ success: true, ...result });
+});
+
+app.post('/api/safety/emergency-stop/reset', (_req, res) => {
+  deactivateEmergencyStop();
+  res.json({ success: true, emergencyStop: getEmergencyStopStatus() });
+});
+
+app.post('/api/safety/reconcile', async (_req, res) => {
+  const result = await reconcileOrders();
+  res.json({ success: true, ...result });
+});
+
+app.get('/api/safety/exposure-limits', (_req, res) => {
+  res.json(getExposureLimits());
+});
+
+app.post('/api/safety/exposure-limits', (req, res) => {
+  try {
+    const updated = setExposureLimits(req.body);
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // -------------------------------------------------------------
@@ -1736,6 +1829,27 @@ function seedAccountsFromFile(filePath) {
   return seedAccounts.length;
 }
 
+/** Reconciliation loop: every 60s, compare local order state vs exchange open orders
+ *  for master accounts and auto-correct drift. */
+let reconciliationTimer = null;
+export function startReconciliationLoop(intervalMs = 60_000) {
+  if (reconciliationTimer) return;
+  // Run an initial reconciliation shortly after startup
+  setTimeout(() => {
+    reconcileOrders().then((r) => {
+      if (r.actions.length) console.log(`[reconcile] ${r.actions.length} action(s) taken`);
+      if (r.errors.length) console.warn(`[reconcile] ${r.errors.length} error(s):`, r.errors.map((e) => e.reason));
+    });
+  }, 5000);
+  reconciliationTimer = setInterval(() => {
+    reconcileOrders().then((r) => {
+      if (r.actions.length) console.log(`[reconcile] ${r.actions.length} action(s) taken`);
+      if (r.errors.length) console.warn(`[reconcile] ${r.errors.length} error(s):`, r.errors.map((e) => e.reason));
+    });
+  }, intervalMs);
+  reconciliationTimer.unref?.();
+}
+
 async function startServer() {
   if (isDev) {
     const { createServer: createViteServer } = await import('vite');
@@ -1894,6 +2008,9 @@ async function startServer() {
 
   startBotLoop();
   startPoller();
+  if (process.env.ENABLE_RECONCILIATION_LOOP !== 'false') {
+    startReconciliationLoop();
+  }
   startPriceFeed();
   setInterval(releaseFinishedBotSymbols, 5000).unref();
   // Containers (Render/Docker) must listen on all interfaces; local dev stays on loopback
