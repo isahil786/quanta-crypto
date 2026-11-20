@@ -281,11 +281,6 @@ export default function Screener({ tickers, onSelectPair }) {
                       }`}>
                         #{rank}
                       </span>
-                      {isHalalActive && (
-                        <span className="ml-1 inline-block px-1.5 py-0 rounded text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
-                          🕌 Halal
-                        </span>
-                      )}
                     </td>
                     <td className="py-3 px-4 font-sans">
                       <div className="font-bold text-white flex items-center gap-1.5">

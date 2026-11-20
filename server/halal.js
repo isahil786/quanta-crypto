@@ -46,8 +46,26 @@ export function halalMarket(index) {
   const unavailable = [];
   for (const h of HALAL_COINS) {
     const live = index.get(h.symbol);
-    if (live) tradable.push({ ...live, halal: true, name: h.name || live.name, marketCap: h.marketCap });
-    else unavailable.push({ symbol: h.symbol, name: h.name });
+    if (live) {
+      const quoteVol = Number(live.quoteVolume || 0);
+      const price = Number(live.price || 0);
+      const high = Number(live.high24h || 0);
+      const low = Number(live.low24h || 0);
+      const rangeSpan = high - low;
+      const rangePosition = rangeSpan > 0 ? (price - low) / rangeSpan : 0.5;
+      tradable.push({
+        ...live,
+        halal: true,
+        name: h.name || live.name,
+        marketCap: h.marketCap,
+        volume24h: quoteVol >= 1e9
+          ? `${(quoteVol / 1e9).toFixed(2)}B`
+          : `${(quoteVol / 1e6).toFixed(1)}M`,
+        rangePosition: Number((rangePosition * 100).toFixed(1)),
+      });
+    } else {
+      unavailable.push({ symbol: h.symbol, name: h.name });
+    }
   }
   tradable.sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0));
   tradable.forEach((c, i) => { c.halalRank = i + 1; });
