@@ -630,7 +630,7 @@ app.post('/api/orders', async (req, res) => {
     }
 
     const brokerId = account.broker;
-    // CoinSwitch Spot is LIMIT only
+    // CoinSwitch Spot supports MARKET and LIMIT orders.
     try {
       validateBrokerOrder(brokerId, { orderType, price: req.body.price, size }, account);
     } catch (valErr) {
@@ -952,13 +952,8 @@ app.post('/api/gtt', (req, res) => {
     return res.status(404).json({ error: 'Account not found' });
   }
 
-  // Capability Gate:
-  if (account.broker === 'coinswitch' && account.segment === 'SPOT') {
-    return res.status(400).json({
-      error: 'CoinSwitch Spot does not support native GTT / Bracket orders. Use Delta Exchange or CoinDCX for conditional trigger orders.',
-    });
-  }
-
+  // Capability Gate: GTT / bracket rules are evaluated locally by the bots engine,
+  // so they work for any broker including CoinSwitch Spot.
   if (!symbol || !VALID_SIDES.has(String(side || 'SELL').toUpperCase())) {
     return res.status(400).json({ error: 'symbol and a valid side (BUY/SELL) are required' });
   }
@@ -982,7 +977,7 @@ app.post('/api/gtt', (req, res) => {
     stopLossPrice: stopLossPrice ? Number(stopLossPrice) : undefined,
     status: 'ACTIVE',
     createdAt: new Date().toISOString(),
-    notes: `${account.broker === 'delta' ? 'Delta Exchange bracket order' : 'CoinDCX TP/SL trigger'}`,
+    notes: `Conditional trigger rule (${account.broker})`,
   };
 
   gttRules.unshift(newRule);
@@ -1775,7 +1770,15 @@ async function startServer() {
     // Prevents accidentally trading with simulated balances when you intended live trading.
     const realAccounts = accounts.filter((a) => a.mode === 'REAL');
     const badRealAccounts = realAccounts.filter(
-      (a) => !a.apiKey || !a.apiSecret || a.apiKey === 'YOUR_COINSWITCH_API_KEY' || a.apiSecret === 'YOUR_COINSWITCH_SECRET'
+      (a) =>
+        !a.apiKey ||
+        !a.apiSecret ||
+        a.apiKey === 'YOUR_COINSWITCH_API_KEY' ||
+        a.apiSecret === 'YOUR_COINSWITCH_SECRET' ||
+        a.apiKey === 'REPLACE_WITH_MASTER_API_KEY' ||
+        a.apiSecret === 'REPLACE_WITH_MASTER_API_SECRET' ||
+        a.apiKey?.startsWith('REPLACE_WITH') ||
+        a.apiSecret?.startsWith('REPLACE_WITH')
     );
     if (badRealAccounts.length > 0) {
       const names = badRealAccounts.map((a) => `${a.accountName} (${a.id})`).join(', ');

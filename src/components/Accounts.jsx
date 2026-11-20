@@ -239,7 +239,7 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
                 <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap gap-1.5 text-[10px] text-slate-400 font-mono">
                   {acc.broker === 'coinswitch' ? (
                     <>
-                      <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">Spot Limit Only</span>
+                      <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">Spot Market & Limit</span>
                       <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">Cancel & Replace</span>
                     </>
                   ) : acc.broker === 'delta' ? (

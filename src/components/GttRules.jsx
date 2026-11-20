@@ -5,7 +5,6 @@ import {
   XCircle,
   CheckCircle2,
   AlertCircle,
-  ShieldAlert,
   Clock,
 } from 'lucide-react';
 
@@ -62,13 +61,6 @@ export default function GttRules({ accounts, activeAccountId }) {
 
   const handleCreateRule = async (e) => {
     e.preventDefault();
-    if (isCoinSwitch) {
-      setNotice({
-        type: 'error',
-        text: 'CoinSwitch does not support native GTT / Bracket orders. Please select Delta Exchange or CoinDCX to create conditional trigger rules.',
-      });
-      return;
-    }
 
     setIsSubmitting(true);
     try {
@@ -279,15 +271,6 @@ export default function GttRules({ accounts, activeAccountId }) {
               <button onClick={() => setShowCreateModal(false)} className="text-slate-500 hover:text-white">✕</button>
             </div>
 
-            {isCoinSwitch && (
-              <div className="my-3 p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-xs text-rose-300 flex items-start gap-2">
-                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>
-                  The active account is <strong>CoinSwitch PRO</strong>, which does not support native GTT rules. Please switch to a <strong>Delta Exchange</strong> or <strong>CoinDCX</strong> account from the header to place conditional trigger orders.
-                </span>
-              </div>
-            )}
-
             <form onSubmit={handleCreateRule} className="flex flex-col gap-3 mt-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -399,9 +382,9 @@ export default function GttRules({ accounts, activeAccountId }) {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || isCoinSwitch}
+                  disabled={isSubmitting}
                   className={`px-4 py-2 text-xs font-bold text-white rounded-lg transition-colors ${
-                    isCoinSwitch
+                    isSubmitting
                       ? 'bg-slate-800 opacity-50 cursor-not-allowed'
                       : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}
