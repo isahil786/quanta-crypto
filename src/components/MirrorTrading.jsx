@@ -10,6 +10,7 @@ import {
   Shield,
   Clock,
   History,
+  Download,
 } from 'lucide-react';
 
 export default function MirrorTrading({ accounts }) {
@@ -108,6 +109,28 @@ export default function MirrorTrading({ accounts }) {
       setNotice({ type: 'error', text: err.message });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const downloadCsv = async () => {
+    try {
+      const res = await fetch('/api/mirror/logs/export');
+      if (!res.ok) throw new Error('Failed to export audit log');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'mirror-audit-log.csv';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setNotice({
+        type: 'success',
+        text: 'Mirror audit log exported to CSV.',
+      });
+    } catch (err) {
+      setNotice({ type: 'error', text: err.message });
     }
   };
 
@@ -296,7 +319,17 @@ export default function MirrorTrading({ accounts }) {
             <History className="w-4 h-4 text-slate-400" />
             <span className="text-xs font-semibold text-white">Mirror Execution Audit Trail</span>
           </div>
-          <span className="text-[11px] text-slate-500 font-mono">Recent Actions: {config.logs?.length || 0}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-slate-500 font-mono">Recent Actions: {config.logs?.length || 0}</span>
+            <button
+              onClick={downloadCsv}
+              disabled={!config.logs?.length}
+              className="px-3 py-1 text-xs font-semibold text-white bg-slate-700 hover:bg-emerald-600 border border-slate-600 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              <Download className="w-3 h-3" />
+              Export CSV
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">

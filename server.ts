@@ -17,8 +17,11 @@ import {
   signDeltaRequest,
   signCoinDCXRequest,
 } from './server/brokers/index.js';
+import type { ExecutionAdapter } from './server/execution/types.js';
 import { BinanceAdapter } from './server/execution/binance.js';
 import { CoinSwitchAdapter } from './server/execution/coinswitch.js';
+import { DeltaAdapter } from './server/execution/delta.js';
+import { CoindcxAdapter } from './server/execution/coindcx.js';
 import {
   accounts,
   orders,
@@ -239,9 +242,11 @@ const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_TTL_MS = 30_000;
 
 // Broker → adapter class map. Each adapter receives decrypted credentials and is wired with onFill.
-const ADAPTER_CLASSES: Record<string, new (acct: ExecutionAccountLike) => CoinSwitchAdapter | BinanceAdapter> = {
+const ADAPTER_CLASSES: Record<string, new (acct: ExecutionAccountLike) => ExecutionAdapter> = {
   coinswitch: CoinSwitchAdapter,
   binance: BinanceAdapter,
+  delta: DeltaAdapter,
+  coindcx: CoindcxAdapter,
 };
 
 type ExecutionAccountLike = {
@@ -253,7 +258,7 @@ type ExecutionAccountLike = {
   exchange?: string;
 };
 
-function createRealAdapter(account: { id: string; broker: string; apiKey: string; apiSecret: string; segment?: string; exchange?: string }, { onDisconnect }: { onDisconnect?: (accountId: string) => void } = {}): CoinSwitchAdapter | BinanceAdapter | undefined {
+function createRealAdapter(account: { id: string; broker: string; apiKey: string; apiSecret: string; segment?: string; exchange?: string }, { onDisconnect }: { onDisconnect?: (accountId: string) => void } = {}): ExecutionAdapter | undefined {
   const AdapterClass = ADAPTER_CLASSES[account.broker];
   if (!AdapterClass) return undefined;
   const adapter = new AdapterClass({
@@ -1068,7 +1073,7 @@ app.get('/api/gtt', (req, res) => {
 });
 
 app.post('/api/gtt', (req, res) => {
-  const { accountId, symbol, type, triggerPrice, condition, side, size, targetPrice, stopLossPrice } = req.body;
+  const { accountId, symbol, type, triggerPrice, condition, side, size, targetPrice, stopLossPrice, trailingStopPercent } = req.body;
   const account = accounts.find((a) => a.id === accountId);
   if (!account) {
     return res.status(404).json({ error: 'Account not found' });
@@ -1081,8 +1086,8 @@ app.post('/api/gtt', (req, res) => {
   }
   if (!isPositiveNumber(size)) return res.status(400).json({ error: 'size must be a positive number' });
   if (condition !== undefined && !['ABOVE', 'BELOW'].includes(condition)) return res.status(400).json({ error: 'condition must be ABOVE or BELOW' });
-  if (!isPositiveNumber(triggerPrice) && !isPositiveNumber(targetPrice) && !isPositiveNumber(stopLossPrice)) {
-    return res.status(400).json({ error: 'Provide a triggerPrice, targetPrice or stopLossPrice' });
+  if (!isPositiveNumber(triggerPrice) && !isPositiveNumber(targetPrice) && !isPositiveNumber(stopLossPrice) && !isPositiveNumber(trailingStopPercent)) {
+    return res.status(400).json({ error: 'Provide a triggerPrice, targetPrice, stopLossPrice or trailingStopPercent' });
   }
 
   const newRule = {
@@ -1097,6 +1102,7 @@ app.post('/api/gtt', (req, res) => {
     size: Number(size),
     targetPrice: targetPrice ? Number(targetPrice) : undefined,
     stopLossPrice: stopLossPrice ? Number(stopLossPrice) : undefined,
+    trailingStopPercent: isPositiveNumber(trailingStopPercent) ? Number(trailingStopPercent) : undefined,
     status: 'ACTIVE',
     createdAt: new Date().toISOString(),
     notes: `Conditional trigger rule (${account.broker})`,
@@ -1162,6 +1168,23 @@ app.post('/api/mirror/update-replica', (req, res) => {
     });
   }
   res.json({ success: true, config: mirrorConfig });
+});
+
+app.get('/api/mirror/logs/export', (_req, res) => {
+  const headers = ['Timestamp', 'Master Order', 'Target Account', 'Status', 'Details'];
+  const rows = mirrorConfig.logs.map((l) => [
+    l.timestamp,
+    l.masterOrder || '',
+    l.targetAccount || '',
+    l.status || '',
+    l.details || '',
+  ]);
+  const csv = [headers, ...rows]
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="mirror-audit-log.csv"');
+  res.send(csv);
 });
 
 // -------------------------------------------------------------
@@ -2019,11 +2042,11 @@ async function startServer() {
   }
 
   // Refresh balances concurrently for all REAL-mode accounts on startup.
-  await Promise.all(accounts.filter((a) => a.broker === 'coinswitch' && a.mode === 'REAL').map((a) => syncAccountBalances(a)));
+  await Promise.all(accounts.filter((a) => a.mode === 'REAL' && ADAPTER_CLASSES[a.broker]).map((a) => syncAccountBalances(a)));
 
   // Refresh balances every 60 seconds for REAL-mode accounts (concurrent, with TTL cache).
   setInterval(async () => {
-    await Promise.all(accounts.filter((a) => a.broker === 'coinswitch' && a.mode === 'REAL').map((a) => syncAccountBalances(a)));
+    await Promise.all(accounts.filter((a) => a.mode === 'REAL' && ADAPTER_CLASSES[a.broker]).map((a) => syncAccountBalances(a)));
   }, 60_000).unref();
 
   // Connect real-time order/fill WebSocket streams for REAL-mode accounts.

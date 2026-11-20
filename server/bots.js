@@ -727,7 +727,26 @@ function runGtt(liveCoins) {  // liveCoins: Map<symbol, coin>
     if (!coin) continue;
     const p = coin.price;
     let reason = null;
-    if (rule.targetPrice || rule.stopLossPrice) {
+
+    // Trailing stop: track peak price since rule activation; exit when price
+    // drops X% from peak (for SELL-side rules exiting a long) or rises X% from
+    // trough (for BUY-side rules exiting a short).
+    if (rule.trailingStopPercent) {
+      const trail = Number(rule.trailingStopPercent);
+      if (isPositiveNumber(trail) && trail > 0) {
+        const longExit = rule.side !== 'BUY';
+        if (!rule._peakPrice || (longExit ? p > rule._peakPrice : p < rule._peakPrice)) {
+          rule._peakPrice = p;
+        }
+        const peak = rule._peakPrice;
+        const dropPct = longExit ? ((peak - p) / peak) * 100 : ((p - peak) / peak) * 100;
+        if (dropPct >= trail) {
+          reason = 'TRAILING_STOP';
+        }
+      }
+    }
+
+    if (!reason && (rule.targetPrice || rule.stopLossPrice)) {
       const longExit = rule.side !== 'BUY';
       if (rule.targetPrice && (longExit ? p >= rule.targetPrice : p <= rule.targetPrice)) reason = 'TARGET';
       else if (rule.stopLossPrice && (longExit ? p <= rule.stopLossPrice : p >= rule.stopLossPrice)) reason = 'STOP_LOSS';

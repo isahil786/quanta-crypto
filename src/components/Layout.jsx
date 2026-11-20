@@ -10,6 +10,7 @@ import {
   TrendingUp,
   Bot,
   Sparkles,
+  PieChart,
 } from 'lucide-react';
 
 export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, feedOk = true, wsConnected = false, children }) {
@@ -23,6 +24,7 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
     { id: 'positions', label: 'Positions & Balances', icon: Layers },
     { id: 'gtt', label: 'GTT Rules', icon: Sliders },
     { id: 'mirror', label: 'Mirror Trading', icon: Cpu },
+    { id: 'pnl', label: 'P&L Dashboard', icon: PieChart },
     { id: 'accounts', label: 'Exchange Accounts', icon: ShieldCheck },
     { id: 'screener', label: 'Screener', icon: TrendingUp },
     { id: 'test-api', label: 'API Console', icon: Server },
