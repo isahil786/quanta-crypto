@@ -272,7 +272,7 @@ export default function Dashboard({
           <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>
             {isCoinSwitchSpot && (
-              <>CoinSwitch Spot: <strong className="text-amber-300">LIMIT orders only natively</strong>. MARKET orders are adapted to LIMIT using the live price.</>
+              <>CoinSwitch Spot: <strong className="text-amber-300">Market & Limit orders with TP/SL</strong>. MARKET adapted to LIMIT natively.</>
             )}
             {broker === 'delta' && (
               <>Delta Exchange: <strong className="text-cyan-300">Bracket & TP/SL orders</strong>, 100x leverage enabled.</>
@@ -569,19 +569,18 @@ export default function Dashboard({
             </div>
 
             {/* TP / SL Toggle */}
-            {!isCoinSwitchSpot && (
-              <div className="flex flex-col gap-2 pt-2 border-t border-slate-800">
-                <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 select-none">
-                  <input
-                    type="checkbox"
-                    checked={enableTpSl}
-                    onChange={(e) => setEnableTpSl(e.target.checked)}
-                    className="accent-emerald-500 rounded"
-                  />
-                  <span>Attach Take Profit & Stop Loss Bracket</span>
-                </label>
+            <div className="flex flex-col gap-2 pt-2 border-t border-slate-800">
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={enableTpSl}
+                  onChange={(e) => setEnableTpSl(e.target.checked)}
+                  className="accent-emerald-500 rounded"
+                />
+                <span>Attach Take Profit & Stop Loss Bracket</span>
+              </label>
 
-                {enableTpSl && (
+              {enableTpSl && (
                   <div className="grid grid-cols-2 gap-2 mt-1">
                     <div>
                       <label className="text-[10px] text-slate-400">Take Profit Price</label>
@@ -608,7 +607,6 @@ export default function Dashboard({
                   </div>
                 )}
               </div>
-            )}
 
             {/* Summary */}
             <div className="bg-slate-950/80 border border-slate-800/80 rounded-lg p-3 text-[11px] text-slate-400 font-mono flex flex-col gap-1">
