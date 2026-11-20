@@ -60,12 +60,7 @@ export default function Dashboard({
   const [liveTrades, setLiveTrades] = useState([]);
   const [activeView, setActiveView] = useState('orderbook'); // 'orderbook' | 'recent_trades'
 
-  // Update orderType if CoinSwitch spot is selected
-  useEffect(() => {
-    if (isCoinSwitchSpot && orderType === 'MARKET') {
-      setOrderType('LIMIT');
-    }
-  }, [isCoinSwitchSpot, orderType]);
+// Update orderType if CoinSwitch spot is selected
 
   // Sync price when pair changes or updates
   useEffect(() => {
@@ -277,7 +272,7 @@ export default function Dashboard({
           <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>
             {isCoinSwitchSpot && (
-              <>CoinSwitch Spot: <strong className="text-amber-300">LIMIT orders only</strong>. Market orders gated to Futures.</>
+              <>CoinSwitch Spot: <strong className="text-amber-300">LIMIT orders only natively</strong>. MARKET orders are adapted to LIMIT using the live price.</>
             )}
             {broker === 'delta' && (
               <>Delta Exchange: <strong className="text-cyan-300">Bracket & TP/SL orders</strong>, 100x leverage enabled.</>
@@ -479,18 +474,15 @@ export default function Dashboard({
               </button>
               <button
                 type="button"
-                disabled={isCoinSwitchSpot}
-                onClick={() => !isCoinSwitchSpot && setOrderType('MARKET')}
-                title={isCoinSwitchSpot ? 'CoinSwitch Spot only supports LIMIT orders' : 'Execute immediately at market price'}
+                onClick={() => setOrderType('MARKET')}
+                title={isCoinSwitchSpot ? 'Adapted to LIMIT using live price (CoinSwitch Spot compliance)' : 'Execute immediately at market price'}
                 className={`flex-1 py-1.5 text-xs font-medium rounded-md border transition-colors relative ${
-                  isCoinSwitchSpot
-                    ? 'opacity-40 cursor-not-allowed text-slate-600 border-slate-900 bg-slate-950'
-                    : orderType === 'MARKET'
+                  orderType === 'MARKET'
                     ? 'bg-slate-800 text-white border-slate-700 shadow-sm'
                     : 'text-slate-400 border-transparent hover:text-slate-200'
                 }`}
               >
-                Market {isCoinSwitchSpot && '(Locked)'}
+                Market {isCoinSwitchSpot && '(Adapted to LIMIT)'}
               </button>
             </div>
 
