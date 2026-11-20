@@ -41,6 +41,7 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
     }
   };
 
+  const isLive = activeAccount?.mode === 'REAL';
   const badge = activeAccount ? getBrokerBadge(activeAccount.broker) : null;
 
   return (
@@ -100,9 +101,14 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
             </div>
           )}
 
-          <div className="flex items-center gap-2 text-xs text-slate-400 pl-2 border-l border-slate-800 hidden md:flex">
-            <span>Paper Trading</span>
-            <span className="w-2 h-2 rounded-full bg-amber-400" title="Orders are simulated; nothing is sent to the exchanges" />
+          <div
+            className="hidden md:flex items-center gap-2 text-xs pl-2 border-l border-slate-800"
+            title={isLive ? 'Orders on this account are sent to the real exchange' : 'Orders are simulated; nothing is sent to the exchange'}
+          >
+            <span className={`font-semibold ${isLive ? 'text-rose-400' : 'text-slate-400'}`}>
+              {isLive ? 'LIVE Trading' : 'Paper Trading'}
+            </span>
+            <span className={`w-2 h-2 rounded-full ${isLive ? 'bg-rose-500 animate-pulse' : 'bg-amber-400'}`} />
           </div>
         </div>
       </header>
@@ -135,8 +141,8 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
       </main>
 
       {/* Footer */}
-      <footer className="h-10 border-t border-slate-800/80 bg-slate-950 px-6 flex items-center justify-between text-xs text-slate-500 shrink-0">
-        <div className="flex items-center gap-3">
+      <footer className="min-h-10 border-t border-slate-800/80 bg-slate-950 px-4 lg:px-6 py-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-xs text-slate-500 shrink-0">
+        <div className="hidden sm:flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="font-semibold text-slate-400">Live Binance Feed</span>
           <span>·</span>
           <span className="text-emerald-400 font-mono">Top 100 Momentum Coins</span>
@@ -147,7 +153,7 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
           <span>·</span>
           <span>CoinDCX (HMAC)</span>
         </div>
-        <div className="flex items-center gap-2 font-mono tabular-nums text-slate-400 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2 font-mono tabular-nums text-slate-400 text-[11px]">
           <span className={`w-2 h-2 rounded-full ${feedOk ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
           <span className={`font-bold ${feedOk ? 'text-emerald-400' : 'text-rose-400'}`}>
             {feedOk ? 'Binance REST: Synchronized' : 'Binance price feed unavailable'}

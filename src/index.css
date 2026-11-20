@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Tailwind v4 has no built-in scrollbar-none; used by horizontally scrolling tab strips. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 @layer base {
   body {
     @apply bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/20 selection:text-emerald-300;
