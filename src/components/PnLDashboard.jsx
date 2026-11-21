@@ -24,7 +24,10 @@ export default function PnLDashboard() {
         fetch('/api/holdings'),
       ]);
       if (pRes.ok) setPositions(await pRes.json());
-      if (tRes.ok) setTrades(await tRes.json());
+      if (tRes.ok) {
+        const tData = await tRes.json();
+        setTrades(Array.isArray(tData) ? tData : tData.trades);
+      }
       if (hRes.ok) setHoldings(await hRes.json());
     } catch (err) {
       console.error('P&L fetch failed', err);
