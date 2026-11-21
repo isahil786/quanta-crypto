@@ -57,7 +57,8 @@ export function deactivateEmergencyStop() {
 /** Cancel all OPEN orders across all accounts via their adapters.
  *  Requires a valid confirmation nonce returned by activateEmergencyStop().
  *  Returns { cancelled, failed }. */
-export async function cancelAllOpenOrders(confirmNonce) {
+/** `resolveAdapter(account)` returns the live exchange adapter for a REAL account (defaults to the poller's CoinSwitch adapter). */
+export async function cancelAllOpenOrders(confirmNonce, resolveAdapter = getAdapter) {
   if (!emergencyStop.active) {
     return { cancelled: [], failed: [], error: 'Emergency stop is not active' };
   }
@@ -85,8 +86,9 @@ export async function cancelAllOpenOrders(confirmNonce) {
       continue;
     }
 
-    // Only CoinSwitch adapters can cancel live orders. PAPER orders are marked CANCELLED locally.
-    if (acc.broker !== 'coinswitch') {
+    // PAPER orders exist only locally, so cancel them locally. REAL orders must be cancelled on the exchange,
+    // whatever the broker; marking them CANCELLED without telling the exchange would leave them live.
+    if (acc.mode !== 'REAL') {
       for (const o of accountOrders) {
         releaseOrder(acc, o);
         o.status = 'CANCELLED';
@@ -96,7 +98,11 @@ export async function cancelAllOpenOrders(confirmNonce) {
       continue;
     }
 
-    const adapter = getAdapter(acc);
+    const adapter = resolveAdapter(acc);
+    if (!adapter) {
+      for (const o of accountOrders) failed.push({ orderId: o.id, accountId: acc.id, reason: 'no exchange adapter / credentials for this account' });
+      continue;
+    }
     for (const o of accountOrders) {
       try {
         await adapter.cancelOrder(acc.id, o.exchangeOrderId || o.id, o.symbol);

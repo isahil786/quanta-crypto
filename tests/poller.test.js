@@ -203,6 +203,7 @@ test('poller PAPER: cancelled master order cancels replica mirror', async () => 
 
   const masterAdapter = getAdapter(master);
   masterAdapter.getOpenOrders = async () => []; // CS-CAN gone from exchange
+  masterAdapter.getOrder = async () => ({ status: 'CANCELED' }); // ...because it was cancelled, not filled
   lastPolled.set(master.id, new Map([['CS-CAN', { status: 'OPEN', price: 100, size: 1, side: 'BUY', orderType: 'LIMIT' }]]));
 
   await pollOnce();

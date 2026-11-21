@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { loadState, startPersistence } from './server/persist.js';
-import { loadSeedAccounts, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
+import { loadSeedAccounts, mergeSeedCredentials, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
 import {
   BROKERS,
   DEFAULT_BROKER,
@@ -31,11 +31,11 @@ import {
   mirrorConfig,
 } from './server/state.js';
 import { uid, mask, isPositiveNumber } from './server/util.js';
-import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmounts } from './server/positions.js';
+import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmounts, findOrderForEvent } from './server/positions.js';
 import { feePct as feeFor, feeRates, executionCost, slippageConfig } from './server/costs.js';
 import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
 import { halalMarket, isHalalSymbol } from './server/halal.js';
-import { startPoller } from './server/poller.js';
+import { startPoller, mirrorMasterOrder } from './server/poller.js';
 import {
   isEmergencyStopActive,
   activateEmergencyStop,
@@ -147,11 +147,12 @@ function accountCredentials(account) {
 
 /** Apply a real exchange fill event to local orders/trades/positions state. */
 function applyRealFill(account, event) {
-  const order = orders.find((o) =>
-    o.accountId === account.id &&
-    (o.exchangeOrderId === event.orderId || o.clientOrderId === event.clientOrderId)
-  );
-  if (!order) return;
+  const order = findOrderForEvent(orders, account.id, event);
+  if (!order) {
+    // Not an order this app placed: if it is on the master (phone/portal), copy it to the replicas.
+    void mirrorExternalMasterOrder(account, event);
+    return;
+  }
 
   const prevFilled = Number(order.filledSize || 0);
   const newFilled = Number(event.filledSize || 0);
@@ -234,15 +235,46 @@ function applyRealFill(account, event) {
   };
   trades.unshift(trade);
 
-  // Mirror trading: replicate master fills to replica accounts (REAL mode).
-  if (account.isMaster && mirrorConfig.enabled && order.status === 'FILLED') {
+  // Mirroring of REAL master orders happens when the order is placed (see mirrorMasterOrder), not here,
+  // so replicas get the same order type at the same time instead of a simulated copy after the fill.
+}
+
+/** Orders mirrored from fill events, so repeated partial-fill events don't re-trigger. */
+const externalMirrored = new Set<string>();
+
+/** A fill arrived for an order this app doesn't know: it was placed on the exchange side (phone/portal).
+ *  Look up its real type/size/price and mirror it. MARKET orders and instantly-filled limit orders
+ *  never rest in the open-orders list, so this is the only way to see them. */
+async function mirrorExternalMasterOrder(account, event) {
+  try {
+    if (!(account.isMaster && account.mode === 'REAL' && mirrorConfig.enabled)) return;
+    if (!(Number(event.filledSize) > 0) || !event.orderId || event.orderId === 'undefined') return;
+    const key = `${account.id}:${event.orderId}`;
+    if (externalMirrored.has(key)) return;
+    externalMirrored.add(key);
+    if (externalMirrored.size > 5000) externalMirrored.delete(externalMirrored.values().next().value as string);
+
+    const adapter = getRealAdapter(account);
+    if (!adapter) return;
+    let o;
     try {
-      mirrorFilledOrder(account, order, fillPrice, {
-        quoteVolume: 0,
-      });
+      o = await adapter.getOrder(account.id, String(event.orderId), event.symbol);
     } catch (err) {
-      console.warn(`[mirror] failed to mirror order ${order.id}:`, (err as Error).message);
+      externalMirrored.delete(key); // let the next fill event retry
+      console.warn(`[mirror] could not look up master order ${event.orderId}:`, (err as Error).message);
+      return;
     }
+    await mirrorMasterOrder(account, {
+      orderId: String(o.orderId || event.orderId),
+      symbol: o.symbol || event.symbol,
+      side: o.side || event.side,
+      type: o.type,
+      size: o.size,
+      price: o.type === 'LIMIT' ? o.price : undefined,
+      status: o.status,
+    });
+  } catch (err) {
+    console.warn('[mirror] external master order mirroring failed:', (err as Error).message);
   }
 }
 
@@ -405,7 +437,7 @@ app.post('/api/accounts', (req, res) => {
   }
 });
 
-app.patch('/api/accounts/:id/mode', (req, res) => {
+app.patch('/api/accounts/:id/mode', async (req, res) => {
   const { mode } = req.body;
   const account = accounts.find((a) => a.id === req.params.id);
   if (!account) return res.status(404).json({ error: 'Account not found' });
@@ -423,8 +455,23 @@ app.patch('/api/accounts/:id/mode', (req, res) => {
     }
   }
 
+  if (mode === 'PAPER' && account.mode === 'REAL' &&
+      orders.some((o) => o.accountId === account.id && o.mode === 'REAL' && o.status === 'OPEN')) {
+    return res.status(409).json({ error: 'This account has open live orders on the exchange. Cancel them before switching to PAPER.' });
+  }
+
   const prevMode = account.mode;
   account.mode = mode;
+  // Fill events only flow while the user stream is connected, and it is otherwise connected at startup only.
+  const adapter = getRealAdapter(account);
+  if (adapter) {
+    try {
+      if (mode === 'REAL' && !adapter.isConnected(account.id)) await adapter.connectUserStream(account.id);
+      if (mode === 'PAPER' && prevMode === 'REAL') await adapter.disconnectUserStream(account.id);
+    } catch (err) {
+      console.warn(`[stream] mode switch stream change failed for ${account.accountName}:`, (err as Error).message);
+    }
+  }
   res.json({
     success: true,
     accountId: account.id,
@@ -729,11 +776,15 @@ app.post('/api/orders', async (req, res) => {
       return res.status(400).json({ error: 'A positive limit price is required for LIMIT orders' });
     }
 
-    const refPrice = orderType === 'LIMIT' ? price : null;
-    const orderValue = orderType === 'LIMIT' ? price * size : null;
-
-    // Exposure limits check
-    const expCheck = checkExposureLimits(accountId, symbol, price || 0, size, orderValue);
+    // Exposure limits check. A MARKET order has no limit price, so value it at the live price;
+    // otherwise its notional would count as 0 and slip past the USDT caps.
+    let exposurePrice = price;
+    if (orderType === 'MARKET') {
+      const lp = (await getLivePriceIndex()).get(symbol);
+      if (!lp) return res.status(400).json({ error: `No live price for ${symbol}; cannot compute order notional.` });
+      exposurePrice = lp.price;
+    }
+    const expCheck = checkExposureLimits(accountId, symbol, exposurePrice, size, exposurePrice * size);
     if (!expCheck.ok) {
       return res.status(403).json({ error: expCheck.reason, exposureLimits: getExposureLimits() });
     }
@@ -792,18 +843,23 @@ app.post('/api/orders', async (req, res) => {
       } catch (err) {
         return res.status(500).json({ error: `Order placement failed: ${(err as Error).message}` });
       }
+      const mappedStatus = placed.status === 'NEW' ? 'OPEN' : placed.status === 'CANCELED' ? 'CANCELLED' : placed.status;
+      const immediateFill = Number(placed.filledSize || 0);
       const realOrder: any = {
         id: placed.clientOrderId || uid('ord'),
+        clientOrderId: placed.clientOrderId,
         exchangeOrderId: placed.orderId,
         accountId: account.id,
         broker: brokerId,
         symbol: placed.symbol,
         side: placed.side,
         orderType: placed.type,
-        price: placed.price ?? execPrice,
+        price: placed.price ?? refPrice,
         size: placed.size,
-        filledSize: placed.filledSize,
-        status: placed.status === 'NEW' ? 'OPEN' : placed.status === 'CANCELED' ? 'CANCELLED' : placed.status,
+        // Any immediate fill is booked through applyRealFill below (balances, holdings, trade record),
+        // so start at 0 here; otherwise the later WS event would look "already processed".
+        filledSize: 0,
+        status: immediateFill > 0 ? 'OPEN' : mappedStatus,
         timeInForce,
         leverage,
         tpPrice: tpPrice ? num(tpPrice) : undefined,
@@ -815,8 +871,32 @@ app.post('/api/orders', async (req, res) => {
       };
       orders.unshift(realOrder);
       if (orders.length > 10000) orders.length = 10000;
+      if (immediateFill > 0) {
+        applyRealFill(account, {
+          orderId: placed.orderId,
+          clientOrderId: placed.clientOrderId,
+          filledSize: immediateFill,
+          fillPrice: placed.fillPrice,
+          timestamp: placed.timestamp,
+        });
+        // An IOC/expired order can fill partly and still be finished; keep the exchange's terminal status
+        if (mappedStatus === 'CANCELLED' || mappedStatus === 'EXPIRED' || mappedStatus === 'REJECTED') realOrder.status = mappedStatus;
+      }
       // Note: REAL orders bypass the simulated margin reservation; risk/OMS guards apply at the exchange.
       res.status(201).json(realOrder);
+      // Master account: copy the exact order (same type, price and side) to the replicas right away.
+      if (account.isMaster && mirrorConfig.enabled) {
+        externalMirrored.add(`${account.id}:${placed.orderId}`); // the fill event for this order needs no second look-up
+        mirrorMasterOrder(account, {
+          orderId: String(placed.orderId),
+          symbol: placed.symbol,
+          side: placed.side,
+          type: orderType,
+          size: placed.size,
+          price: orderType === 'LIMIT' ? num(req.body.price) : undefined,
+          status: placed.status,
+        }).catch((err) => console.warn(`[mirror] failed to mirror order ${placed.orderId}:`, (err as Error).message));
+      }
       return;
     }
 
@@ -896,6 +976,10 @@ app.put('/api/orders/:id', (req, res) => {
   if (order.status !== 'OPEN') {
     return res.status(409).json({ error: `Only OPEN orders can be modified (this order is ${order.status}).` });
   }
+  if (order.mode === 'REAL') {
+    // An edit here would only change our local copy while the exchange order stays as it was.
+    return res.status(409).json({ error: 'Live exchange orders cannot be modified from here. Cancel the order and place a new one.' });
+  }
 
   const { price, size } = req.body;
   if (price !== undefined && !isPositiveNumber(price)) return res.status(400).json({ error: 'price must be a positive number' });
@@ -949,13 +1033,23 @@ app.put('/api/orders/:id', (req, res) => {
   res.json({ action: 'MODIFIED', message: `Order updated on ${brokerMeta.displayName}`, order });
 });
 
-app.delete('/api/orders/:id', (req, res) => {
+app.delete('/api/orders/:id', async (req, res) => {
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (order.status !== 'OPEN') {
     return res.status(409).json({ error: `Only OPEN orders can be cancelled (this order is ${order.status}).` });
   }
   const acct = accounts.find((a) => a.id === order.accountId);
+  if (order.mode === 'REAL') {
+    // Cancel on the exchange first; only mark it cancelled locally once the exchange confirms.
+    const adapter = acct && getRealAdapter(acct);
+    if (!adapter) return res.status(400).json({ error: 'No exchange adapter/credentials for this order\'s account; cannot cancel on the exchange.' });
+    try {
+      await adapter.cancelOrder(acct.id, order.exchangeOrderId || order.id, order.symbol);
+    } catch (err) {
+      return res.status(502).json({ error: `Exchange cancel failed: ${(err as Error).message}. The order is still OPEN here; check the exchange.` });
+    }
+  }
   if (acct) releaseOrder(acct, order); // give the reserved funds back
   order.status = 'CANCELLED';
   res.json({ success: true, message: `Order ${order.id} cancelled successfully`, order });
@@ -993,7 +1087,7 @@ app.post('/api/safety/emergency-stop/cancel-all', async (req, res) => {
     return res.status(400).json({ error: 'Emergency stop is not active' });
   }
   const { confirmNonce } = req.body || {};
-  const result = await cancelAllOpenOrders(confirmNonce);
+  const result = await cancelAllOpenOrders(confirmNonce, getRealAdapter);
   if (result.error) {
     return res.status(400).json({ error: result.error, emergencyStop: getEmergencyStopStatus() });
   }
@@ -1095,6 +1189,10 @@ app.post('/api/positions/:id/close', async (req, res) => {
   if (!pos) return res.status(404).json({ error: 'Position not found' });
   const account = accounts.find((a) => a.id === pos.accountId);
   if (!account) return res.status(404).json({ error: 'Position account not found' });
+  if (account.mode === 'REAL') {
+    // Settling this locally would show the position as closed while the coins are still held on the exchange.
+    return res.status(409).json({ error: 'This position is on a live account. Close it by placing a SELL order (Orders tab) so it executes on the exchange.' });
+  }
 
   let price = pos.markPrice;
   let quoteVolume;
@@ -1887,8 +1985,12 @@ app.use((err, req, res, next) => {
 function seedAccountsFromFile(filePath) {
   const seedAccounts = loadSeedAccounts(filePath);
   for (const seed of seedAccounts) {
-    const exists = accounts.some((a) => a.broker === seed.broker && a.accountName === seed.accountName);
-    if (exists) continue;
+    const existing = accounts.find((a) => a.broker === seed.broker && a.accountName === seed.accountName);
+    if (existing) {
+      // Restored from state.json (which holds no credentials): re-attach the keys from the seed file.
+      if (mergeSeedCredentials(existing, seed)) console.log(`[seed] restored credentials for ${existing.accountName}`);
+      continue;
+    }
     accounts.push(seed);
     holdings.push({
       accountId: seed.id,
@@ -2104,7 +2206,7 @@ async function startServer() {
     throw new Error('Refusing to start on a non-loopback address without API_TOKEN set. The trading API would be unauthenticated.');
   }
   const server = app.listen(PORT, HOST, () => {
-    console.log(`QuantaCrypto Terminal (paper trading) running at http://${HOST}:${PORT}`);
+    console.log(`QuantaCrypto Terminal running at http://${HOST}:${PORT}`);
   });
 
   const wss = new WebSocketServer({

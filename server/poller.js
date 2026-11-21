@@ -15,6 +15,7 @@ let cycleRunning = false;
 const adapters = new Map();      // accountId -> CoinSwitchAdapter
 const lastPolled = new Map();    // accountId -> Map<exchangeOrderId, snapshot>
 const lastPriceBySymbol = new Map(); // symbol -> last known price (fallback for MARKET->LIMIT)
+const inflightMirror = new Set();  // `${replicaId}:${masterOrderId}` currently being placed
 
 function getAdapter(account) {
   let adapter = adapters.get(account.id);
@@ -69,6 +70,7 @@ function snap(eo) {
     price: eo.price,
     size: eo.size,
     side: eo.side,
+    symbol: eo.symbol,
     orderType: eo.type,
     timestamp: eo.timestamp,
   };
@@ -121,9 +123,11 @@ function buildMirrorOrder(replicaAcc, masterOrder, multiplier, refPrice) {
   const replicaSize = Number((Number(masterOrder.size) * multiplier).toFixed(8));
   let repOrderType = masterOrder.type || masterOrder.orderType;
   let adaptationNote = '';
-  if (replicaAcc.broker === 'coinswitch' && replicaAcc.segment === 'SPOT' && repOrderType === 'MARKET') {
+  // REAL replicas get the master's exact order type (a MARKET stays a MARKET). Only a PAPER replica,
+  // which has no exchange to execute a market order, simulates it as a marketable LIMIT at the live price.
+  if (replicaAcc.mode !== 'REAL' && repOrderType === 'MARKET') {
     repOrderType = 'LIMIT';
-    adaptationNote = 'Adapted MARKET order to LIMIT for CoinSwitch Spot compliance.';
+    adaptationNote = 'Adapted MARKET order to LIMIT (paper simulation at the live price).';
   }
   const masterOrderId = sanitizeOrderId(masterOrder.exchangeOrderId || masterOrder.orderId || masterOrder.id);
   return {
@@ -255,27 +259,35 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
     const multiplier = Number(replica.multiplier || 1);
 
     if (action === 'new') {
-      // Dedupe: skip if a mirror already exists for this master order on this replica.
+      // Dedupe: skip if a mirror already exists for this master order on this replica, or one is being placed right now
+      // (the poller, the order form and the fill stream can all report the same master order).
+      const lockKey = `${replicaAcc.id}:${masterOrderId}`;
+      if (inflightMirror.has(lockKey)) return;
       const existing = orders.find((o) => o.accountId === replicaAcc.id && o.mirrorsMasterOrderId === masterOrderId);
       if (existing) return;
-      const repOrder = buildMirrorOrder(replicaAcc, eo, multiplier, refPrice);
-      const placed = await placeReplicaOrder(replicaAcc, repOrder);
-      if (!placed.ok) {
+      inflightMirror.add(lockKey);
+      try {
+        const repOrder = buildMirrorOrder(replicaAcc, eo, multiplier, refPrice);
+        const placed = await placeReplicaOrder(replicaAcc, repOrder);
+        if (!placed.ok) {
+          pushMirrorLog({
+            id: uid('mlog'), timestamp: new Date().toISOString(),
+            masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
+            targetAccount: replicaAcc.accountName,
+            status: 'REJECTED', details: placed.reason,
+          });
+          return;
+        }
         pushMirrorLog({
           id: uid('mlog'), timestamp: new Date().toISOString(),
           masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
           targetAccount: replicaAcc.accountName,
-          status: 'REJECTED', details: placed.reason,
+          status: 'EXECUTED',
+          details: `Mirrored new ${repOrder.orderType} ${eo.side} ${repOrder.size} ${eo.symbol} @ ${repOrder.orderType === 'MARKET' ? 'market' : repOrder.price} (${multiplier}x) on ${replicaAcc.accountName}.`,
         });
-        return;
+      } finally {
+        inflightMirror.delete(lockKey);
       }
-      pushMirrorLog({
-        id: uid('mlog'), timestamp: new Date().toISOString(),
-        masterOrder: `${masterOrderId} (${eo.symbol} ${eo.side} ${eo.size})`,
-        targetAccount: replicaAcc.accountName,
-        status: 'EXECUTED',
-        details: `Mirrored new ${eo.orderType} ${eo.side} ${eo.size} ${eo.symbol} @ ${eo.price ?? 'market'} (${multiplier}x) on ${replicaAcc.accountName}.`,
-      });
     } else if (action === 'modify') {
       const repOrder = orders.find((o) => o.accountId === replicaAcc.id && o.mirrorsMasterOrderId === masterOrderId);
       if (!repOrder) return;
@@ -426,6 +438,22 @@ function buildOrdersByExchangeId() {
   return ordersByExchangeId;
 }
 
+/** Mirror one master order onto all replicas right now, with the master's exact order type
+ *  (MARKET -> MARKET, LIMIT -> LIMIT at the same price). Safe to call from several places for the same
+ *  order: replicas that already have a copy (or are being placed) are skipped.
+ *  `eo` = { orderId, symbol, side, type, size, price?, status }. */
+export async function mirrorMasterOrder(master, eo) {
+  if (isEmergencyStopActive()) return { skipped: true, reason: 'Emergency stop is active' };
+  if (!mirrorConfig.enabled) return { skipped: true, reason: 'Mirroring is disabled' };
+  if (!isMasterAccount(master)) return { skipped: true, reason: 'Not an active REAL CoinSwitch master account' };
+  const status = normalizeStatus(eo.status || 'NEW');
+  if (status === 'CANCELLED' || status === 'REJECTED' || status === 'EXPIRED') return { skipped: true, reason: `Master order is ${status}` };
+  let liveIndex; try { liveIndex = await getLivePriceIndex(); } catch { liveIndex = null; }
+  const order = { ...eo, type: eo.type || eo.orderType, orderType: eo.type || eo.orderType };
+  await mirrorAction(master, order, 'new', null, liveIndex);
+  return { skipped: false };
+}
+
 /** Poll once: detect new/modified/cancelled orders on master CoinSwitch accounts and mirror. */
 export async function pollOnce() {
   // Emergency stop: skip all mirroring while active
@@ -436,6 +464,9 @@ export async function pollOnce() {
   let liveIndex;
   try { liveIndex = await getLivePriceIndex(); } catch { liveIndex = null; }
 
+  // While mirroring is switched off we still refresh the snapshots (so turning it back on doesn't copy
+  // stale orders) but never place or cancel anything on replicas.
+  const act = mirrorConfig.enabled;
   const masters = getMasterAccounts();
   await Promise.all(masters.map(async (master) => {
     const adapter = getAdapter(master);
@@ -454,6 +485,7 @@ export async function pollOnce() {
     // New or modified orders (each order handled independently; one failure does not block others or the snapshot).
     for (const eo of exchangeOrders) {
       try {
+        if (!act) continue;
         const p = prev.get(eo.orderId);
         const local = ordersByExchangeId.get(master.id)?.get(eo.orderId);
         if (!p && !local) {
@@ -469,9 +501,21 @@ export async function pollOnce() {
     // Cancelled / deleted orders (was tracked on exchange, now gone).
     for (const [orderId, p] of prev) {
       try {
-        if (!curr.has(orderId)) {
-          await mirrorAction(master, { orderId, ...p }, 'cancel', p, liveIndex);
+        if (curr.has(orderId) || !act) continue;
+        // An order leaving the open list was either cancelled/expired OR filled. A fill must not cancel the
+        // replicas' copies (they are meant to fill too), so look up how it ended; if that fails, assume cancelled.
+        let finalStatus;
+        try { finalStatus = normalizeStatus((await adapter.getOrder(master.id, orderId, p.symbol)).status); } catch { /* unknown */ }
+        if (finalStatus === 'FILLED') {
+          pushMirrorLog({
+            id: uid('mlog'), timestamp: new Date().toISOString(),
+            masterOrder: `${orderId} (${p.symbol ?? ''} ${p.side ?? ''})`,
+            targetAccount: 'all replicas',
+            status: 'EXECUTED', details: `Master order ${orderId} filled; replica copies were left in place to fill on their own.`,
+          });
+          continue;
         }
+        await mirrorAction(master, { orderId, ...p }, 'cancel', p, liveIndex);
       } catch (err) {
         console.warn(`[poller] cancel mirror failed for ${orderId} on ${master.accountName}:`, err.message);
       }

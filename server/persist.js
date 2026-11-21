@@ -1,8 +1,8 @@
 // State persistence: set STATE_FILE=/path/state.json to survive restarts.
-// API keys/secrets are stored as-is in this file — fine for local-only use;
-// never commit real keys (STATE_FILE should not be committed).
+// API keys/secrets are NOT written to this file (see snapshot()); they come from ACCOUNTS_FILE on startup.
+// STATE_FILE still holds orders and balances, so don't commit it.
 // Pure spot trading — no futures, no leverage, no funding.
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, copyFileSync } from 'fs';
 import path from 'path';
 import { accounts, orders, trades, positions, holdings, mirrorConfig, emergencyStop, exposureLimits } from './state.js';
 import { botsState } from './bots.js';
@@ -23,7 +23,15 @@ function snapshot() {
 /** Load a snapshot into the live in-memory arrays (mutating in place). Returns true if loaded. */
 export function loadState(file) {
   let data;
-  try { data = JSON.parse(readFileSync(file, 'utf8')); } catch { return false; }
+  let raw;
+  try { raw = readFileSync(file, 'utf8'); } catch { return false; } // no state file yet
+  try { data = JSON.parse(raw); } catch (e) {
+    // Don't let the next snapshot silently overwrite a damaged file: keep a copy for recovery.
+    const backup = `${file}.corrupt-${Date.now()}`;
+    try { copyFileSync(file, backup); } catch { /* best effort */ }
+    console.error(`[persist] ${file} is not valid JSON (${e.message}); starting empty. Copy kept at ${backup}`);
+    return false;
+  }
   for (const [key, arr] of Object.entries(ARRAYS)) {
     if (!Array.isArray(data[key])) continue;
     arr.length = 0;

@@ -268,7 +268,7 @@ export default function Dashboard({
           <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span>
             {isCoinSwitchSpot && (
-              <>CoinSwitch Spot: <strong className="text-amber-300">Market & Limit orders with TP/SL</strong>. MARKET adapted to LIMIT natively.</>
+              <>CoinSwitch Spot: <strong className="text-amber-300">Market & Limit orders with TP/SL</strong>. Mirror Trading copies master orders to live replicas with the same type (MARKET stays MARKET, LIMIT stays LIMIT).</>
             )}
             {broker === 'delta' && (
               <>Delta Exchange: <strong className="text-cyan-300">Bracket & TP/SL orders</strong>, 100x leverage enabled.</>
@@ -434,10 +434,10 @@ export default function Dashboard({
               <button
                 type="button"
                 onClick={() => setSide('BUY')}
-                className={`py-2 text-xs font-bold rounded-md transition-all ${
+                className={`py-2 text-xs font-bold rounded-md border transition-all ${
                   side === 'BUY'
-                    ? 'bg-emerald-600 text-white shadow'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-emerald-600 text-white border-emerald-500 shadow shadow-emerald-900/40'
+                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20'
                 }`}
               >
                 BUY / LONG
@@ -445,10 +445,10 @@ export default function Dashboard({
               <button
                 type="button"
                 onClick={() => setSide('SELL')}
-                className={`py-2 text-xs font-bold rounded-md transition-all ${
+                className={`py-2 text-xs font-bold rounded-md border transition-all ${
                   side === 'SELL'
-                    ? 'bg-rose-600 text-white shadow'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-rose-600 text-white border-rose-500 shadow shadow-rose-900/40'
+                    : 'bg-rose-500/10 text-rose-400 border-rose-500/25 hover:bg-rose-500/20'
                 }`}
               >
                 SELL / SHORT
@@ -456,14 +456,14 @@ export default function Dashboard({
             </div>
 
             {/* Order Type Tabs */}
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950 border border-slate-800 rounded-lg">
               <button
                 type="button"
                 onClick={() => setOrderType('LIMIT')}
-                className={`flex-1 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                className={`py-1.5 text-xs font-semibold rounded-md border transition-colors ${
                   orderType === 'LIMIT'
-                    ? 'bg-slate-800 text-white border-slate-700 shadow-sm'
-                    : 'text-slate-400 border-transparent hover:text-slate-200'
+                    ? 'bg-cyan-600 text-white border-cyan-500 shadow'
+                    : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800 hover:text-white'
                 }`}
               >
                 Limit
@@ -471,14 +471,14 @@ export default function Dashboard({
               <button
                 type="button"
                 onClick={() => setOrderType('MARKET')}
-                title={isCoinSwitchSpot ? 'Adapted to LIMIT using live price (CoinSwitch Spot compliance)' : 'Execute immediately at market price'}
-                className={`flex-1 py-1.5 text-xs font-medium rounded-md border transition-colors relative ${
+                title="Execute immediately at the best available market price"
+                className={`py-1.5 text-xs font-semibold rounded-md border transition-colors ${
                   orderType === 'MARKET'
-                    ? 'bg-slate-800 text-white border-slate-700 shadow-sm'
-                    : 'text-slate-400 border-transparent hover:text-slate-200'
+                    ? 'bg-cyan-600 text-white border-cyan-500 shadow'
+                    : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800 hover:text-white'
                 }`}
               >
-                Market {isCoinSwitchSpot && '(Adapted to LIMIT)'}
+                Market
               </button>
             </div>
 

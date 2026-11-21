@@ -82,6 +82,20 @@ export function reserveOrder(account, order, price, feePercent) {
 }
 
 /** Give an order's reserved funds back (cancel, edit, reject or just before it fills). */
+/** Find the local order an exchange event belongs to. Matches by exchange order id or client order id,
+ *  and only when the event actually carries that id (so `undefined === undefined` can't match the wrong order). */
+export function findOrderForEvent(orderList, accountId, event) {
+  const exId = event?.orderId != null && event.orderId !== '' ? String(event.orderId) : null;
+  const clId = event?.clientOrderId ? String(event.clientOrderId) : null;
+  if (!exId && !clId) return undefined;
+  const mine = orderList.filter((o) => o.accountId === accountId);
+  return (
+    (exId && mine.find((o) => o.exchangeOrderId != null && String(o.exchangeOrderId) === exId)) ||
+    (clId && mine.find((o) => o.clientOrderId === clId || o.id === clId)) ||
+    undefined
+  );
+}
+
 export function releaseOrder(account, order) {
   const usdt = order.reservedUSDT || 0;
   const base = order.reservedBase || 0;

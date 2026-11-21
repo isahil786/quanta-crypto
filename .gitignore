@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 data/accounts.json
+data/state.json
+data/state.json.tmp
+data/state.json.corrupt-*

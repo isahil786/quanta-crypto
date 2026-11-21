@@ -236,7 +236,7 @@ export default function MirrorTrading({ accounts }) {
               <div className="flex items-start gap-2">
                 <Shield className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
                 <span>
-                  <strong>Automatic Constraint Adaptation:</strong> When the Master places a Market order, the engine automatically converts it into an executable Limit order for CoinSwitch Spot replicas to prevent rejection.
+                  <strong>Exact Order Copy:</strong> A Market order on the Master is copied to live replicas as a Market order, and a Limit order as a Limit order at the same price (scaled by each replica&apos;s multiplier). Paper replicas simulate a Market order as a Limit at the live price. Any exchange rejection shows in the log below.
                 </span>
               </div>
             </div>

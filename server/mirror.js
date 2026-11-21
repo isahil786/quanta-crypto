@@ -30,7 +30,7 @@ export function mirrorFilledOrder(masterAccount, order, refPrice, ctx = {}) {
     let adaptationNote = '';
     if (replicaAcc.broker === 'coinswitch' && replicaAcc.segment === 'SPOT' && orderType === 'MARKET') {
       replicaOrderType = 'LIMIT';
-      adaptationNote = 'Adapted MARKET order to LIMIT for CoinSwitch Spot compliance.';
+      adaptationNote = 'Adapted MARKET order to LIMIT (paper simulation at the live price).';
     }
     const repOrder = {
       id: uid('ord-rep'), accountId: replicaAcc.id, broker: replicaAcc.broker, symbol, side,

@@ -53,6 +53,17 @@ function parseSeedAccount(raw, index) {
   };
 }
 
+/** State snapshots never contain API credentials, so a restored account comes back with empty keys.
+ *  Re-attach them from the seed file; returns true if anything was filled in. Never overwrites existing keys. */
+export function mergeSeedCredentials(existing, seed) {
+  if (existing.apiKey && existing.apiSecret) return false;
+  if (!seed.apiKey || !seed.apiSecret) return false;
+  existing.apiKey = seed.apiKey;
+  existing.apiSecret = seed.apiSecret;
+  existing.apiKeyMasked = seed.apiKeyMasked;
+  return true;
+}
+
 export function loadSeedAccounts(filePath = DEFAULT_ACCOUNTS_FILE) {
   let data;
   try {

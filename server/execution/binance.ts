@@ -38,6 +38,14 @@ function makeClientOrderId(prefix = 'qc') {
 }
 
 /** Map Binance order status to our common status. */
+function avgFillPrice(raw: any): number | undefined {
+  const executed = Number(raw.executedQty || 0);
+  const quote = Number(raw.cummulativeQuoteQty || 0);
+  if (executed > 0 && quote > 0) return quote / executed;
+  const limit = Number(raw.price || 0);
+  return limit > 0 ? limit : undefined;
+}
+
 function mapStatus(s: string): OrderStatus {
   switch (s) {
     case 'NEW': return 'NEW';
@@ -63,6 +71,7 @@ class BinanceAdapter implements ExecutionAdapter {
   readonly supportsWebSocket = true;
 
   private fillListeners = new Set<(event: ExecutionFillEvent) => void>();
+  private reconnectAttempts = new Map<string, number>();
   // Per-account WS state
   private streams = new Map<string, {
     listenKey: string;
@@ -184,8 +193,9 @@ class BinanceAdapter implements ExecutionAdapter {
       size: Number(raw.origQty || raw.quantity || 0),
       price: raw.price ? Number(raw.price) : undefined,
       status: mapStatus(raw.status),
-      filledSize: Number(raw.executedQty || raw.cummulativeQuoteQty ? 0 : raw.executedQty || 0),
-      fillPrice: raw.price ? Number(raw.price) : undefined,
+      filledSize: Number(raw.executedQty || 0),
+      // Market orders report price "0.00000000"; derive the average fill price from the quote total.
+      fillPrice: avgFillPrice(raw),
       fee: undefined,
       feeAsset: undefined,
       timestamp: raw.transactTime ? new Date(raw.transactTime).toISOString() : nowIso(),
@@ -236,6 +246,7 @@ class BinanceAdapter implements ExecutionAdapter {
     state.ws = ws;
 
     ws.onopen = () => {
+      this.reconnectAttempts.delete(accountId);
       state.connecting = false;
       this.scheduleKeepalive(accountId);
     };
@@ -251,22 +262,24 @@ class BinanceAdapter implements ExecutionAdapter {
     };
 
     ws.onerror = (err) => {
-      console.error(`[Binance WS] error for ${accountId}:`, err.message);
+      console.error(`[Binance WS] error for ${accountId}:`, (err as any)?.message ?? 'socket error');
     };
 
     ws.onclose = () => {
       state.ws = null;
       if (state.keepalive) { clearTimeout(state.keepalive); state.keepalive = null; }
       state.connecting = false;
+      // Do not reconnect after an intentional disconnect (or if a newer stream replaced this one).
+      if (this.streams.get(accountId) !== state) return;
+      this.reconnectAttempts.set(accountId, this.reconnectCount(accountId) + 1);
       // reconnect with backoff
-      const delay = Math.min(WS_RECONNECT_BASE_MS * (this.reconnectCount(accountId) + 1), 30000);
+      const delay = Math.min(WS_RECONNECT_BASE_MS * 2 ** Math.min(this.reconnectCount(accountId) - 1, 5), 30000);
       state.reconnect = setTimeout(() => this.reconnectUserStream(accountId), delay);
     };
   }
 
   private reconnectCount(accountId: string): number {
-    // crude counter stored on stream state via a side map
-    return 0;
+    return this.reconnectAttempts.get(accountId) || 0;
   }
 
   private async reconnectUserStream(accountId: string) {
@@ -288,12 +301,14 @@ class BinanceAdapter implements ExecutionAdapter {
           try {
             const controller = new AbortController();
             timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-            await fetch(`${base}/api/v3/userDataStream/${state.listenKey}`, {
+            const res = await fetch(`${base}/api/v3/userDataStream/${state.listenKey}`, {
               method: 'PUT',
               headers: { 'X-MBX-APIKEY': this.account.apiKey },
               signal: controller.signal,
             });
             clearTimeout(timeout);
+            // Expired/invalid key: close the socket so onclose reconnects with a fresh key.
+            if (!res.ok && res.status >= 400 && res.status < 500) state.ws?.close();
             break;
           } catch {
             clearTimeout(timeout);
@@ -338,6 +353,8 @@ class BinanceAdapter implements ExecutionAdapter {
     if (!state) return;
     if (state.keepalive) { clearTimeout(state.keepalive); state.keepalive = null; }
     if (state.reconnect) { clearTimeout(state.reconnect); state.reconnect = null; }
+    this.streams.delete(accountId); // delete first so onclose sees an intentional disconnect
+    this.reconnectAttempts.delete(accountId);
     if (state.ws) { state.ws.close(); state.ws = null; }
     // Delete listen key server-side
     try {
