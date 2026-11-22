@@ -2,7 +2,7 @@
 // Implements the CoinSwitch API Trading Spot surface per docs at
 // https://api-trading.coinswitch.co/
 //
-// Base URL: https://api-trading.coinswitch.co
+// Base URL: https://coinswitch.co
 // Auth: Ed25519, signed message = METHOD + path_with_query + epoch (body NOT included).
 // Headers: X-AUTH-APIKEY, X-AUTH-SIGNATURE, X-AUTH-EPOCH, Content-Type
 // Endpoints:
@@ -29,7 +29,7 @@ import type {
   ExecutionFillEvent,
 } from './types.js';
 
-const BASE_URL = 'https://api-trading.coinswitch.co';
+const BASE_URL = 'https://coinswitch.co';
 const WS_URL = 'wss://ws.coinswitch.co/orderupdates';
 const WS_PATH = '/pro/realtime-rates-socket/spot/order-updates';
 const WS_NAMESPACE = '/orderupdates';

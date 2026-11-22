@@ -6,11 +6,17 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
-export default function Screener({ tickers, onSelectPair }) {
+export default function Screener({ tickers, onSelectPair, onOpenTradingView }) {
   const [search, setSearch] = useState('');
   const [filterMode, setFilterMode] = useState('all'); // 'all', 'halal', 'gainers', 'volume', 'breakouts', 'top10'
   const [sortBy, setSortBy] = useState('momentumRank');
   const [sortAsc, setSortAsc] = useState(true);
+
+  const openTradingView = (symbol) => {
+    const tvSymbol = `BINANCE:${symbol}`;
+    const url = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`;
+    (onOpenTradingView ?? ((u) => window.open(u, '_blank')))(url);
+  };
 
   // Live halal coin data fetched from the server (merged with live Binance prices).
   const [halalCoins, setHalalCoins] = useState([]);
@@ -283,7 +289,7 @@ export default function Screener({ tickers, onSelectPair }) {
                       </span>
                     </td>
                     <td className="py-3 px-4 font-sans">
-                      <div className="font-bold text-white flex items-center gap-1.5">
+                      <div className="font-bold text-white flex items-center gap-1.5 cursor-pointer hover:text-emerald-400 transition-colors" onClick={() => openTradingView(pair.symbol)} title="Open on TradingView">
                         <span>{pair.symbol}</span>
                       </div>
                       <div className="text-[11px] text-slate-400">{pair.base} / USDT</div>

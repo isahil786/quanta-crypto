@@ -270,6 +270,7 @@ export default function App() {
         <Screener
           tickers={tickers}
           onSelectPair={handleSelectPairFromScreener}
+          onOpenTradingView={(url) => window.open(url, '_blank')}
         />
       )}
 
