@@ -79,7 +79,7 @@ export class CoindcxAdapter implements ExecutionAdapter {
         signal: ctrl.signal,
       });
       const text = await res.text();
-      if (!res.ok) throw new Error(`CoinDCX ${method} ${path}: HTTP ${res.status} ${text}`);
+      if (!res.ok) throw new Error(`CoinDCX ${method} ${path}: HTTP ${res.status} ${text.slice(0, 300)}`);
       try { return JSON.parse(text); } catch { return text; }
     } finally {
       clearTimeout(t);
@@ -165,14 +165,18 @@ export class CoindcxAdapter implements ExecutionAdapter {
   }
 
   async getAccountInfo(accountId: string): Promise<AccountInfoResult> {
-    const data = await this.request('GET', '/exchange/v1/users/me/balances');
+    // CoinDCX balances are a signed POST (not GET): POST /exchange/v1/users/balances { timestamp(ms) }
+    // -> [ { currency, balance, locked_balance } ]
+    const data = await this.request('POST', '/exchange/v1/users/balances', { timestamp: Date.now() });
     const list: any[] = Array.isArray(data) ? data : (data.data ?? data.result ?? []);
-    const balances = list.map((b) => ({
-      asset: b.currency ?? b.asset ?? 'USDT',
-      free: Number(b.available_balance ?? b.free ?? 0),
-      locked: Number(b.locked_balance ?? b.locked ?? 0),
-      total: Number(b.total_balance ?? b.total ?? 0),
-    }));
+    if (!Array.isArray(list) || (!Array.isArray(data) && (data as any).message && !list.length)) {
+      throw new Error(`CoinDCX balances: ${(data as any).message || 'unexpected response'}`);
+    }
+    const balances = list.map((b) => {
+      const free = Number(b.balance ?? b.available_balance ?? b.free ?? 0);
+      const locked = Number(b.locked_balance ?? b.locked ?? 0);
+      return { asset: String(b.currency ?? b.asset ?? '').toUpperCase(), free, locked, total: free + locked };
+    });
     return { accountId, balances, raw: data };
   }
 

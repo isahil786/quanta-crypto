@@ -1,8 +1,7 @@
 # QuantaCrypto Terminal (paper trading)
 
 A trading-terminal UI and simulation engine for CoinSwitch PRO, Delta Exchange India and CoinDCX.
-**Nothing is sent to any exchange.** Orders, positions, bots and mirror trades are simulated in memory
-against live Binance public prices. State resets on restart.
+PAPER accounts are simulated in memory against live Binance public prices. REAL accounts can send live spot orders only when `LIVE_TRADING=true` is set (capped by `LIVE_MAX_ORDER_USDT`, default 50 USDT per order).
 
 ## Run
     npm install
@@ -26,6 +25,16 @@ against live Binance public prices. State resets on restart.
 - Halal screening: `server/data/halal_coins.json` (coinranking halal list) is joined with live Binance/OKX prices at `GET /api/halal/coins`. The Algo Bots pair picker defaults to "Halal only" and lists every halal coin with a live USDT pair, not just the top movers. Bot creation rejects non-halal pairs when the client sends `halalOnly: true` or the server runs with `HALAL_ONLY=true`. This is a third-party screen, not a religious ruling.
 - Binance blocked from your host (HTTP 451, common on Render)? Market data and websocket tickers fall back to Binance mirror hosts, then OKX. `GET /api/health` is the health-check route; in production the server binds 0.0.0.0.
 
+
+## Real accounts & balances
+Set `"mode": "REAL"` on an entry in `data/accounts.json` (with real `apiKey`/`apiSecret`) and restart. The app then reads the live
+wallet (CoinSwitch `/user/portfolio`, Delta `/v2/wallet/balances`, CoinDCX `POST /users/balances`, Binance `/api/v3/account`)
+at start-up, every 60s, and via the **Sync** button. A `"mode"` in accounts.json overrides a mode restored from `state.json`.
+- **Test Connection** makes a real read-only authenticated call and reports the wallet or the exchange's rejection reason.
+- A 0 USDT balance now comes with a reason (INR-only wallet, funds in USD/USDC, empty wallet, or an API error such as an
+  un-whitelisted IP) shown on the account card.
+- CoinSwitch/CoinDCX wallets are often funded in INR; INR is listed but not converted: buy USDT on the exchange first.
+- Delta India keys are separate from global Delta keys, need the server IP whitelisted, and the wallet is reported in USD (counted as USDT).
 
 ## Execution realism
 
