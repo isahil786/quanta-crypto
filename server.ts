@@ -710,6 +710,53 @@ app.post('/api/accounts/:id/sync-balance', async (req, res) => {
   });
 });
 
+app.post('/api/accounts/:id/sync-orders', async (req, res) => {
+  const account = accounts.find((a) => a.id === req.params.id);
+  if (!account) return res.status(404).json({ error: 'Account not found' });
+  if (account.mode !== 'REAL') {
+    return res.status(400).json({ error: 'Account is in PAPER mode: switch it to REAL to sync orders from the exchange.' });
+  }
+  const adapter = getRealAdapter(account);
+  if (!adapter) {
+    return res.status(400).json({ error: 'Real trading adapter not configured for this account.' });
+  }
+  let exchangeOrders;
+  try {
+    exchangeOrders = await adapter.getOpenOrders(account.id);
+  } catch (err) {
+    return res.status(502).json({ error: `Failed to fetch orders from exchange: ${(err as Error).message}` });
+  }
+  const existingIds = new Set(orders.filter((o) => o.accountId === account.id).map((o) => o.exchangeOrderId).filter(Boolean));
+  const synced = [];
+  for (const eo of exchangeOrders) {
+    if (eo.exchangeOrderId && existingIds.has(eo.exchangeOrderId)) continue;
+    const localOrder = {
+      id: eo.clientOrderId || uid('ord-synced'),
+      clientOrderId: eo.clientOrderId,
+      exchangeOrderId: eo.exchangeOrderId,
+      accountId: account.id,
+      broker: account.broker,
+      symbol: eo.symbol,
+      side: eo.side,
+      orderType: eo.type,
+      price: eo.price ?? undefined,
+      size: eo.size,
+      filledSize: Number(eo.filledSize || 0),
+      status: eo.status === 'NEW' ? 'OPEN' : eo.status,
+      timeInForce: 'GTC',
+      leverage: 1,
+      timestamp: eo.timestamp || new Date().toISOString(),
+      fee: eo.fee ?? 0,
+      mode: 'REAL',
+      raw: eo.raw,
+    };
+    orders.unshift(localOrder);
+    if (orders.length > 10000) orders.length = 10000;
+    synced.push(localOrder);
+  }
+  res.json({ success: true, account: account.id, synced: synced.length, orders: synced });
+});
+
 // -------------------------------------------------------------
 // 3. Live Market Data (Binance Top 100 Momentum Coins & Depth)
 // -------------------------------------------------------------
@@ -1424,7 +1471,7 @@ app.post('/api/mirror/update-replica', (req, res) => {
   const { accountId, multiplier, active } = req.body;
   if (!accounts.some((a) => a.id === accountId)) return res.status(404).json({ error: 'Account not found' });
   if (accountId === mirrorConfig.masterAccountId) return res.status(400).json({ error: 'The master account cannot be a replica' });
-  if (multiplier !== undefined && !(Number(multiplier) > 0 && Number(multiplier) <= 100)) {
+  if (multiplier !== undefined && !(Number(multiplier) >= 0 && Number(multiplier) <= 100)) {
     return res.status(400).json({ error: 'multiplier must be between 0 and 100' });
   }
   const replica = mirrorConfig.replicas.find((r) => r.accountId === accountId);
@@ -1434,7 +1481,7 @@ app.post('/api/mirror/update-replica', (req, res) => {
   } else {
     mirrorConfig.replicas.push({
       accountId,
-      multiplier: Number(multiplier) || 1.0,
+      multiplier: Number(multiplier) || 0.5,
       active: active !== undefined ? Boolean(active) : true,
       maxSlippagePercent: 0.2,
       note: 'Added replica allocation',

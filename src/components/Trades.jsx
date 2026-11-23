@@ -14,6 +14,7 @@ export default function Trades() {
   const [viewTab, setViewTab] = useState('open'); // 'open', 'trades', 'all'
   const [selectedBroker, setSelectedBroker] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [syncingOrders, setSyncingOrders] = useState(false);
   const [actionNotice, setActionNotice] = useState(null);
 
   // Pagination state
@@ -51,6 +52,33 @@ export default function Trades() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const syncOrdersFromExchange = async () => {
+    setSyncingOrders(true);
+    try {
+      const accRes = await fetch('/api/accounts');
+      if (!accRes.ok) throw new Error('Failed to load accounts');
+      const accounts = await accRes.json();
+      const realAccounts = Array.isArray(accounts) ? accounts.filter((a) => a.mode === 'REAL') : [];
+      let totalSynced = 0;
+      for (const acc of realAccounts) {
+        const res = await fetch(`/api/accounts/${acc.id}/sync-orders`, { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          totalSynced += data.synced || 0;
+        }
+      }
+      setActionNotice({
+        type: 'success',
+        text: `Synced ${totalSynced} order(s) from exchange(s).`,
+      });
+      fetchOrdersAndTrades();
+    } catch (err) {
+      setActionNotice({ type: 'error', text: err.message });
+    } finally {
+      setSyncingOrders(false);
     }
   };
 
@@ -189,6 +217,15 @@ export default function Trades() {
             title="Refresh"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            onClick={syncOrdersFromExchange}
+            disabled={syncingOrders}
+            className="p-2 bg-slate-800 border border-slate-700 hover:border-emerald-500 text-slate-400 hover:text-emerald-400 rounded-lg transition-colors"
+            title="Sync orders from exchange"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncingOrders ? 'animate-spin' : ''}`} />
+            <span className="sr-only">Sync Orders from Exchange</span>
           </button>
         </div>
       </div>
