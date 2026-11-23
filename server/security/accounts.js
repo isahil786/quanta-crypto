@@ -14,7 +14,9 @@ const VALID_SEGMENTS = new Set(['SPOT']);
 function mask(key) {
   if (!key) return 'Not configured';
   const visible = key.slice(-4);
-  return '*'.repeat(Math.max(key.length - 4, 0)) + visible;
+  const hidden = Math.max(key.length - 4, 0);
+  const asterisks = '*'.repeat(Math.min(hidden, 8));
+  return hidden > 8 ? asterisks + '…' + visible : asterisks + visible;
 }
 
 function parseSeedAccount(raw, index) {
