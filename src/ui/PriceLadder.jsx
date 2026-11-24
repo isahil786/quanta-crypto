@@ -41,7 +41,6 @@ export default function PriceLadder({ depth, price, precision = 2, isLive = fals
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetIdx]);
 
   const asks = (depth.asks || []).slice(0, 6).slice().reverse();

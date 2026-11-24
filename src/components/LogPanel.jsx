@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 const LEVEL_TONE = {
   error: { border: 'border-l-down', bg: 'bg-down/10', text: 'text-down', dot: 'bg-down' },
   warn: { border: 'border-l-live', bg: 'bg-live/10', text: 'text-live', dot: 'bg-live' },
@@ -30,7 +31,7 @@ export default function LogPanel() {
 
   useEffect(() => {
     fetchLogs();
-    const iv = setInterval(fetchLogs, 3000);
+    const iv = visibleInterval(fetchLogs, 3000);
     return () => clearInterval(iv);
   }, []);
 

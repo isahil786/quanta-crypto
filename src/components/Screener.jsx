@@ -6,6 +6,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 // Squarified treemap: lays items (each with .area, summing to w*h) into rectangles that stay close to square.
 function squarify(items, x, y, w, h) {
   const out = [];
@@ -88,7 +89,7 @@ export default function Screener({ tickers, onSelectPair }) {
       return;
     }
     fetchHalal();
-    const timer = setInterval(fetchHalal, 3000); // live refresh like the momentum screener
+    const timer = visibleInterval(fetchHalal, 3000); // live refresh like the momentum screener
     return () => clearInterval(timer);
   }, [filterMode]);
 
@@ -187,7 +188,6 @@ export default function Screener({ tickers, onSelectPair }) {
       }
     })();
     return () => { alive = false; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sparkKey]);
 
   const byVolume = processed.slice().sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0));

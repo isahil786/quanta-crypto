@@ -13,6 +13,7 @@ import PriceCell from '../ui/PriceCell.jsx';
 import PositionsDock from '../ui/PositionsDock.jsx';
 import PriceLadder from '../ui/PriceLadder.jsx';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 // Live orders worth more than this (USD) also need a typed confirmation.
 const TYPED_CONFIRM_ABOVE_USD = 5000;
 
@@ -32,16 +33,15 @@ export default function Dashboard({
   const [pendingOrder, setPendingOrder] = useState(null);
 
   // Selected pair (from live Binance top 100)
-  const currentPair = tickers.find((t) => t.symbol === selectedSymbol) || tickers[0] || {
-    symbol: 'BTCUSDT',
-    base: 'BTC',
-    price: 76000.0,
-    change24h: 2.1,
-    high24h: 76500.0,
-    low24h: 74200.0,
-    volume24h: '2.1B',
+  // Never substitute another coin (or a made-up price) when the selected pair is missing from the ticker list:
+  // the chart and order ticket must follow the symbol the user picked.
+  const wantedSymbol = selectedSymbol || tickers[0]?.symbol || 'BTCUSDT';
+  const currentPair = tickers.find((t) => t.symbol === wantedSymbol) || {
+    symbol: wantedSymbol,
+    base: wantedSymbol.replace(/USDT$/, ''),
+    price: 0,
+    change24h: 0,
     precision: 2,
-    momentumRank: 1,
   };
 
   // Search filter for top 100 ribbon
@@ -72,7 +72,7 @@ export default function Dashboard({
     if (currentPair?.price) {
       setPrice(currentPair.price.toString());
     }
-  }, [currentPair?.symbol]);
+  }, [currentPair?.symbol, currentPair?.price > 0]);
 
   // Fetch live orderbook depth from Binance
   useEffect(() => {
@@ -90,7 +90,7 @@ export default function Dashboard({
     };
 
     fetchDepth();
-    const interval = setInterval(fetchDepth, 2000);
+    const interval = visibleInterval(fetchDepth, 2000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -113,7 +113,7 @@ export default function Dashboard({
     };
 
     fetchTrades();
-    const interval = setInterval(fetchTrades, 3000);
+    const interval = visibleInterval(fetchTrades, 3000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -260,7 +260,9 @@ export default function Dashboard({
             i
           </span>
         </h1>
-        <PriceCell value={currentPair.price} decimals={currentPair.precision ?? 2} className="text-2xl font-semibold" />
+        {currentPair.price > 0
+          ? <PriceCell value={currentPair.price} decimals={currentPair.precision ?? 2} className="text-2xl font-semibold" />
+          : <span className="font-mono text-2xl font-semibold text-muted">—</span>}
         <span className={`rounded-lg px-2 py-0.5 font-mono text-sm font-semibold ${currentPair.change24h >= 0 ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>
           {currentPair.change24h >= 0 ? '▲ +' : '▼ '}{currentPair.change24h}%
         </span>
@@ -279,7 +281,7 @@ export default function Dashboard({
       {/* 3. Terminal Grid: Orderbook Depth + Fast Order Ticket */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Chart (left), ticket (right, full height), book under the chart */}
-        <PriceChart symbol={currentPair.symbol} className="lg:col-span-8" height={400} />
+        <PriceChart symbol={currentPair.symbol} livePrice={currentPair.price} className="lg:col-span-8" height={400} />
         {/* Left Column: Live Order Book & Real-Time Trades (7 Cols) */}
         <div className="lg:col-span-8 lg:col-start-1 bg-slate-900/80 border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
           <div>

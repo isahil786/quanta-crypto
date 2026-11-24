@@ -9,6 +9,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 export default function Positions({ accounts, activeAccountId }) {
   const [allPositions, setPositions] = useState([]);
   const [allHoldings, setHoldings] = useState([]);
@@ -39,7 +40,7 @@ export default function Positions({ accounts, activeAccountId }) {
   useEffect(() => {
     let isMounted = true;
     fetchData();
-    const interval = setInterval(() => {
+    const interval = visibleInterval(() => {
       if (!isMounted) return;
       fetchData();
     }, 4000);

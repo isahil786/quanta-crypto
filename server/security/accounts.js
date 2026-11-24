@@ -8,7 +8,7 @@ import { uid } from '../util.js';
 export const DEFAULT_ACCOUNTS_FILE = path.resolve(process.cwd(), 'data', 'accounts.json');
 
 const REQUIRED = ['broker', 'accountName', 'apiKey', 'apiSecret'];
-const VALID_BROKERS = new Set(['coinswitch', 'delta', 'coindcx']);
+const VALID_BROKERS = new Set(['coinswitch', 'delta', 'coindcx', 'binance']);
 const VALID_SEGMENTS = new Set(['SPOT']);
 
 function mask(key) {

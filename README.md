@@ -1,17 +1,25 @@
 # QuantaCrypto Terminal (paper trading)
 
-A trading-terminal UI and simulation engine for CoinSwitch PRO, Delta Exchange India and CoinDCX.
-**Nothing is sent to any exchange.** Orders, positions, bots and mirror trades are simulated in memory
-against live Binance public prices. State resets on restart.
+A trading-terminal UI and simulation engine for CoinSwitch PRO, Delta Exchange India, CoinDCX and Binance.
+
+**Accounts default to PAPER mode: nothing is sent to any exchange.** Orders, positions, bots and mirror
+trades are simulated in memory against live Binance public prices, and state resets on restart.
+
+**An account switched to REAL mode places real orders** through its exchange API keys
+(`PATCH /api/accounts/:id/mode`, or `"mode": "REAL"` in `data/accounts.json`). In REAL mode:
+- Manual orders (MARKET/LIMIT) go to the exchange; fills arrive over the exchange's user stream.
+- Bots, GTT rules and TP/SL are simulation-only and are refused on REAL accounts.
+- Mirror trading copies the master's real orders to REAL replicas (see `mirrorConfig`, enabled by default).
+- Always set `API_TOKEN` and keep `HOST` on loopback unless you are behind TLS.
 
 ## Run
     npm install
-    npm run dev      # Vite dev middleware on http://127.0.0.1:3000
+    npm run dev      # Vite dev middleware on http://127.0.0.1:$PORT (default 6001)
     npm run build && npm start   # production: serves dist/
     npm test
 
 ## Config (.env)
-- `PORT` (3000), `HOST` (127.0.0.1 by default), `API_TOKEN` (optional bearer token for /api;
+- `PORT` (6001), `HOST` (127.0.0.1 by default), `API_TOKEN` (optional bearer token for /api;
   in the browser run `localStorage.setItem('apiToken','<token>')`).
 
 ## Simulation notes

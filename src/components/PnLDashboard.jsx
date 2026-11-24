@@ -6,6 +6,7 @@ import {
   Clock,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 export default function PnLDashboard() {
   const [positions, setPositions] = useState([]);
   const [trades, setTrades] = useState([]);
@@ -35,7 +36,7 @@ export default function PnLDashboard() {
 
   useEffect(() => {
     fetchData();
-    const iv = setInterval(fetchData, 5000);
+    const iv = visibleInterval(fetchData, 5000);
     return () => clearInterval(iv);
   }, []);
 

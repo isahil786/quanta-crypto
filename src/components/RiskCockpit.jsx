@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 const BROKER_COLOR = { coinswitch: '#E8A838', delta: '#38BDF8', coindcx: '#A78BFA' };
 const BROKER_NAME = { coinswitch: 'CoinSwitch', delta: 'Delta India', coindcx: 'CoinDCX' };
 const DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
@@ -45,7 +46,7 @@ export default function RiskCockpit({ accounts = [] }) {
       } catch { /* keep last data */ } finally { if (alive) setLoading(false); }
     };
     load();
-    const iv = setInterval(load, 5000);
+    const iv = visibleInterval(load, 5000);
     return () => { alive = false; clearInterval(iv); };
   }, []);
 

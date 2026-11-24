@@ -53,7 +53,7 @@ export function lockedBase(account, asset) {
   return sum;
 }
 
-function syncBaseHolding(account, asset) {
+export function syncBaseHolding(account, asset) {
   const h = findHolding(account, asset);
   if (!h) return;
   h.locked = Number(lockedBase(account, asset).toFixed(10));

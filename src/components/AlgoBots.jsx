@@ -18,6 +18,7 @@ import {
   ArrowDownUp,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 // Price formatting that stays readable from BTC (100,123.45) down to sub-cent coins (0.00001234)
 const fmtPrice = (p) => {
   const n = Number(p);
@@ -160,7 +161,7 @@ export default function AlgoBots({ accounts, tickers }) {
   useEffect(() => {
     let isMounted = true;
     fetchBots();
-    const interval = setInterval(() => {
+    const interval = visibleInterval(() => {
       if (!isMounted) return;
       fetchBots();
     }, 3000);
@@ -182,7 +183,7 @@ export default function AlgoBots({ accounts, tickers }) {
       } catch { /* keep the last good list */ }
     };
     load();
-    const id = setInterval(load, 15000);
+    const id = visibleInterval(load, 15000);
     return () => { alive = false; clearInterval(id); };
   }, []);
 

@@ -37,8 +37,14 @@ export function installConsoleCapture() {
   console.warn = (...args) => push('warn', ...args);
   console.error = (...args) => push('error', ...args);
   // Capture unhandled errors and rejections too.
+  // After an uncaught exception the process state is unknown (half-applied fills, stuck locks). For a trading
+  // process the safe response is to log it and exit so a supervisor (Docker/Render/systemd) restarts it clean.
+  // Set CRASH_ON_UNCAUGHT=false to keep running (not recommended). Tests never exit.
   process.on('uncaughtException', (err) => {
     push('error', `[UNCAUGHT_EXCEPTION] ${err.stack || err.message}`);
+    if (process.env.CRASH_ON_UNCAUGHT !== 'false' && !process.env.QUANTA_TEST) {
+      setTimeout(() => process.exit(1), 100).unref?.();
+    }
   });
   process.on('unhandledRejection', (reason) => {
     push('error', `[UNHANDLED_REJECTION] ${reason && reason.stack ? reason.stack : String(reason)}`);

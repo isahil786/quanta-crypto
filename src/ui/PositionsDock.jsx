@@ -3,6 +3,7 @@ import DataTable from './DataTable.jsx';
 import { useConfirm } from './Confirm.jsx';
 import { useToast } from './Toast.jsx';
 
+import { visibleInterval } from './visibleInterval.js';
 /** Open positions and open orders for one account, without leaving the Terminal. */
 export default function PositionsDock({ accountId, isLive = false, className = '' }) {
   const [tab, setTab] = useState('positions');
@@ -22,7 +23,7 @@ export default function PositionsDock({ accountId, isLive = false, className = '
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = visibleInterval(load, 5000);
     return () => clearInterval(t);
   }, [load]);
 

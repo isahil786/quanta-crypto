@@ -10,6 +10,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 export default function Trades() {
   const confirm = useConfirm();
   const [orders, setOrders] = useState([]);
@@ -60,7 +61,7 @@ export default function Trades() {
   useEffect(() => {
     let isMounted = true;
     fetchOrdersAndTrades();
-    const interval = setInterval(() => {
+    const interval = visibleInterval(() => {
       if (!isMounted) return;
       fetchOrdersAndTrades();
     }, 5000);
