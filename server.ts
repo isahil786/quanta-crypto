@@ -7,7 +7,6 @@ import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { loadState, startPersistence } from './server/persist.js';
 import { loadSeedAccounts, mergeSeedCredentials, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
 import {
   BROKERS,
@@ -84,7 +83,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 6000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 6001;
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
 // Behind Render/Docker proxies every client shares the proxy's IP unless we trust X-Forwarded-For,
@@ -2045,20 +2044,6 @@ async function startServer() {
     app.get('*', (req, res) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
-  }
-
-  // Persist state to disk so a restart doesn't wipe orders, positions,
-  // mirror config, bots, emergency-stop, and exposure-limit state. Defaults to
-  // data/state.json when STATE_FILE is not set.
-  const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), 'data', 'state.json');
-  try {
-    const restored = loadState(stateFile);
-    for (const b of botsState.bots) if (b.status === 'RUNNING' || b.status === 'PAUSED') { b._wsCounted = false; trackBotSymbol(b); }
-    const flush = startPersistence(stateFile);
-    for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => { flush(); process.exit(0); });
-    console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${stateFile}`);
-  } catch (err) {
-    console.error(`[persist] failed to initialise: ${err.message}`);
   }
 
   // Seed accounts from ACCOUNTS_FILE (user-editable JSON). Credentials are

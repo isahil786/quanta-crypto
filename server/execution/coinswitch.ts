@@ -29,7 +29,7 @@ import type {
   ExecutionFillEvent,
 } from './types.js';
 
-const BASE_URL = 'https://api-trading.coinswitch.co';
+const BASE_URL = 'https://coinswitch.co';
 const WS_URL = 'wss://ws.coinswitch.co/orderupdates';
 const WS_PATH = '/pro/realtime-rates-socket/spot/order-updates';
 const WS_NAMESPACE = '/orderupdates';
