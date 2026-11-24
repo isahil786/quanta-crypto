@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import DataTable from '../ui/DataTable.jsx';
+import MirrorMonitor from '../ui/MirrorMonitor.jsx';
 import {
   Cpu,
   Power,
@@ -14,7 +16,6 @@ export default function MirrorTrading({ accounts }) {
   const [mirrorData, setMirrorData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [newReplicaId, setNewReplicaId] = useState('');
 
   const fetchMirrorData = async () => {
     try {
@@ -110,38 +111,6 @@ export default function MirrorTrading({ accounts }) {
     }
   };
 
-  const handleAddReplica = async () => {
-    if (!newReplicaId) return;
-    if (!mirrorData) return;
-    const masterId = mirrorData.config.masterAccountId;
-    if (newReplicaId === masterId) {
-      setNotice({ type: 'error', text: 'The master account cannot be a replica' });
-      return;
-    }
-    const alreadyAdded = mirrorData.config.replicas.some((r) => r.accountId === newReplicaId);
-    if (alreadyAdded) {
-      setNotice({ type: 'error', text: 'This account is already added as a replica' });
-      return;
-    }
-    try {
-      const res = await fetch('/api/mirror/update-replica', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: newReplicaId, multiplier: 0.5, active: true }),
-      });
-      if (res.ok) {
-        setNotice({ type: 'success', text: 'Replica added at 50% default allocation' });
-        setNewReplicaId('');
-        fetchMirrorData();
-      } else {
-        const data = await res.json();
-        setNotice({ type: 'error', text: data.error || 'Failed to add replica' });
-      }
-    } catch (err) {
-      setNotice({ type: 'error', text: err.message });
-    }
-  };
-
   const downloadCsv = async () => {
     try {
       const res = await fetch('/api/mirror/logs/export');
@@ -229,6 +198,8 @@ export default function MirrorTrading({ accounts }) {
         </div>
       )}
 
+      <MirrorMonitor config={config} masterAccount={masterAccount} accounts={accounts} />
+
       {/* Architecture Layout: Master Account Card -> Replica Accounts Matrix */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Master Account Configuration */}
@@ -287,37 +258,6 @@ export default function MirrorTrading({ accounts }) {
             </div>
 
             <div className="flex flex-col gap-3 mt-4">
-              {/* Add Replica */}
-              {mirrorData && (
-                <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                  <div className="flex items-center gap-3 w-full sm:w-auto">
-                    <span className="text-xs font-bold text-white">Add Replica Account</span>
-                    <select
-                      value={newReplicaId}
-                      onChange={(e) => setNewReplicaId(e.target.value)}
-                      className="bg-slate-900 border border-slate-700 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="">Select account…</option>
-                      {mirrorData.accounts
-                        .filter((a) => a.id !== mirrorData.config.masterAccountId)
-                        .filter((a) => !mirrorData.config.replicas.some((r) => r.accountId === a.id))
-                        .map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.accountName} ({a.broker})
-                          </option>
-                        ))}
-                    </select>
-                    <button
-                      onClick={handleAddReplica}
-                      disabled={!newReplicaId || loading}
-                      className="px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Add
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {config.replicas.map((rep) => {
                 const targetAccount = accounts.find((a) => a.id === rep.accountId) || {
                   accountName: rep.accountId,
@@ -339,31 +279,19 @@ export default function MirrorTrading({ accounts }) {
                       <p className="text-[11px] text-slate-400 mt-1">{rep.note}</p>
                     </div>
 
-                    <div className="flex items-center gap-4 shrink-0">
-                      <div className="flex flex-col gap-2 w-64">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs text-slate-400">Trade %:</span>
-                          <span className="text-xs font-mono text-emerald-400 font-bold">
-                            {Math.round(rep.multiplier * 100)}%
-                          </span>
-                        </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
+                        <span className="text-xs text-slate-400">Multiplier:</span>
                         <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="10"
-                          value={rep.multiplier * 100}
-                          onChange={(e) => {
-                            const pct = Number(e.target.value);
-                            handleUpdateReplica(rep.accountId, pct / 100, rep.active);
-                          }}
-                          className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                          type="number"
+                          step="0.1"
+                          min="0.1"
+                          max="5.0"
+                          value={rep.multiplier}
+                          onChange={(e) => handleUpdateReplica(rep.accountId, e.target.value, rep.active)}
+                          className="w-16 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-500"
                         />
-                        <div className="flex justify-between text-[10px] text-slate-500 font-mono px-1">
-                          {[0, 50, 100].map((p) => (
-                            <span key={p}>{p}%</span>
-                          ))}
-                        </div>
+                        <span className="text-xs text-slate-400">x</span>
                       </div>
 
                       <button
@@ -404,48 +332,19 @@ export default function MirrorTrading({ accounts }) {
             </button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-              <tr>
-                <th className="py-2.5 px-4">Timestamp</th>
-                <th className="py-2.5 px-4">Master Order Origin</th>
-                <th className="py-2.5 px-4">Target Replica</th>
-                <th className="py-2.5 px-4">Status</th>
-                <th className="py-2.5 px-4">Adaptation & Execution Notes</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-              {config.logs?.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-8 text-center text-slate-500 font-sans">
-                    No mirror actions yet. Click &quot;Simulate Master Signal&quot; or place an order on the master account to see replication logs.
-                  </td>
-                </tr>
-              ) : (
-                config.logs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-800/30 transition-colors">
-                    <td className="py-2.5 px-4 text-slate-400 text-[11px]">
-                      {new Date(log.timestamp).toLocaleTimeString()}
-                    </td>
-                    <td className="py-2.5 px-4 font-sans text-slate-200 font-medium">{log.masterOrder}</td>
-                    <td className="py-2.5 px-4 font-sans text-white">{log.targetAccount}</td>
-                    <td className="py-2.5 px-4 font-sans">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        log.status === 'EXECUTED'
-                          ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
-                          : 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
-                      }`}>
-                        {log.status}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4 font-sans text-slate-300 text-[11px]">{log.details}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          rows={config.logs || []}
+          empty={'No mirror actions yet. Click "Simulate Master Signal" or place an order on the master account to see replication logs.'}
+          columns={[
+            { key: 'masterOrder', header: 'Master order', primary: true, mono: false, render: (l) => <b className="text-ink">{l.masterOrder}</b> },
+            { key: 'timestamp', header: 'Time', render: (l) => <span className="text-xs text-muted">{new Date(l.timestamp).toLocaleTimeString()}</span> },
+            { key: 'targetAccount', header: 'Replica', mono: false },
+            { key: 'status', header: 'Status', mono: false, render: (l) => (
+              <span className={`rounded px-2 py-0.5 text-xs font-bold ${l.status === 'EXECUTED' ? 'bg-up/10 text-up' : 'bg-live/10 text-live'}`}>{l.status === 'EXECUTED' ? '✓ ' : '! '}{l.status}</span>
+            ) },
+            { key: 'details', header: 'Notes', mono: false, render: (l) => <span className="text-xs text-ink2">{l.details}</span> },
+          ]}
+        />
       </div>
     </div>
   );

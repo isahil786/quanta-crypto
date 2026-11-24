@@ -1,6 +1,8 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.jsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
+import { ToastProvider } from './ui/Toast.jsx';
+import { ConfirmProvider } from './ui/Confirm.jsx';
 import './index.css';
 
 // If the server runs with API_TOKEN, set it once in the browser console:
@@ -26,6 +28,10 @@ try {
 
 createRoot(document.getElementById('root')!).render(
   <ErrorBoundary>
-    <App />
+    <ToastProvider>
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
+    </ToastProvider>
   </ErrorBoundary>
 );

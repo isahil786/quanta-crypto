@@ -41,6 +41,7 @@ export default function GttRules({ accounts, activeAccountId }) {
   // Sync trigger prices with live Binance mark price
   useEffect(() => {
     const fetchCurrentPrice = async () => {
+      if (!/^[A-Z0-9]{5,12}$/.test(symbol)) return;
       try {
         const res = await fetch(`/api/market/depth?symbol=${symbol}`);
         if (res.ok) {

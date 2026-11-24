@@ -1,33 +1,88 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Design tokens. Existing screens use slate/emerald/rose classes, so those scales are
+   remapped here and every screen picks up the new look. New code should use the
+   semantic names (bg-canvas, bg-surface, text-up, text-live ...). */
+@theme {
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-raised: var(--c-raised);
+  --color-line: var(--c-line);
+  --color-ink: var(--c-ink);
+  --color-muted: var(--c-muted);
+  --color-accent: var(--c-accent);
+  --color-up: var(--c-up);
+  --color-down: var(--c-down);
+  --color-live: var(--c-live);
+  --color-paper: var(--c-paper);
+
+  --color-slate-950: var(--c-canvas);
+  --color-slate-900: var(--c-surface);
+  --color-slate-800: var(--c-raised);
+  --color-slate-700: var(--c-line);
+  --color-slate-600: var(--c-line2);
+  --color-slate-500: var(--c-muted);
+  --color-slate-400: var(--c-muted2);
+  --color-slate-300: var(--c-ink2);
+  --color-slate-200: var(--c-ink);
+  --color-slate-100: var(--c-ink);
+  --color-emerald-300: var(--c-up);
+  --color-emerald-400: var(--c-up);
+  --color-emerald-500: var(--c-up);
+  --color-rose-400: var(--c-down);
+  --color-rose-500: var(--c-down);
+}
+
+:root {
+  --c-canvas: #0a0c10; --c-surface: #101319; --c-raised: #1d2130;
+  --c-line: #232a3a; --c-line2: #3b4358;
+  --c-ink: #eceff4; --c-ink2: #c3cad8; --c-muted: #8e97a8; --c-muted2: #9aa3b2;
+  --c-accent: #8b7cff; --c-up: #35d6a0; --c-down: #ff5d73;
+  --c-live: #ffb224; --c-paper: #5bc0de;
+}
+[data-theme="light"] {
+  --c-canvas: #f4f5f9; --c-surface: #ffffff; --c-raised: #e7eaf2;
+  --c-line: #d3d8e3; --c-line2: #c0c6d4;
+  --c-ink: #12151c; --c-ink2: #2c3342; --c-muted: #566074; --c-muted2: #566074;
+  --c-accent: #5443d9; --c-up: #0b8f63; --c-down: #c9253f;
+  --c-live: #a85f00; --c-paper: #0b7a99;
+}
+[data-theme="contrast"] {
+  --c-canvas: #000000; --c-surface: #000000; --c-raised: #1a1a1a;
+  --c-line: #ffffff; --c-line2: #ffffff;
+  --c-ink: #ffffff; --c-ink2: #ffffff; --c-muted: #e6e6e6; --c-muted2: #e6e6e6;
+  --c-accent: #b6aeff; --c-up: #3dffb0; --c-down: #ff7088;
+  --c-live: #ffd23d; --c-paper: #7fe0ff;
+}
+/* Compact density: tighter table rows and panel padding */
+[data-density="compact"] table td, [data-density="compact"] table th { padding-block: 0.25rem; }
+
 /* Tailwind v4 has no built-in scrollbar-none; used by horizontally scrolling tab strips. */
 @utility scrollbar-none {
   scrollbar-width: none;
-  &::-webkit-scrollbar {
-    display: none;
-  }
+  &::-webkit-scrollbar { display: none; }
+}
+/* Diagonal hazard stripe shown above every screen while a live account is selected. */
+@utility bg-live-stripe {
+  background-image: repeating-linear-gradient(135deg, var(--c-live) 0 10px, var(--c-canvas) 10px 20px);
 }
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/20 selection:text-emerald-300;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    @apply bg-canvas text-ink antialiased selection:bg-accent/30;
+    font-family: var(--font-sans);
   }
-
-  /* Custom high-contrast scrollbars for trading panels */
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: #090d16;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: #1e293b;
-    border-radius: 3px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: #334155;
-  }
+  /* Visible keyboard focus everywhere */
+  :focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--c-canvas); }
+  ::-webkit-scrollbar-thumb { background: var(--c-line); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--c-line2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation: none !important; transition: none !important; }
 }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import RiskCockpit from './components/RiskCockpit.jsx';
 import Layout from './components/Layout.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import Trades from './components/Trades.jsx';
@@ -204,6 +205,8 @@ export default function App() {
         setActiveAccountId={setActiveAccountId}
         feedOk={feedOk}
         wsConnected={wsConnected}
+        tickers={tickers}
+        onSelectPair={setSelectedSymbol}
       >
       {activeTab === 'dashboard' && (
         <Dashboard
@@ -215,6 +218,8 @@ export default function App() {
           onOrderPlaced={handleOrderPlaced}
         />
       )}
+
+      {activeTab === 'risk' && <RiskCockpit accounts={accounts} />}
 
       {activeTab === 'bots' && (
         <AlgoBots
@@ -270,7 +275,6 @@ export default function App() {
         <Screener
           tickers={tickers}
           onSelectPair={handleSelectPairFromScreener}
-          onOpenTradingView={(url) => window.open(url, '_blank')}
         />
       )}
 

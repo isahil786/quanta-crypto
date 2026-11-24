@@ -2,7 +2,7 @@
 // Implements the CoinSwitch API Trading Spot surface per docs at
 // https://api-trading.coinswitch.co/
 //
-// Base URL: https://coinswitch.co
+// Base URL: https://api-trading.coinswitch.co
 // Auth: Ed25519, signed message = METHOD + path_with_query + epoch (body NOT included).
 // Headers: X-AUTH-APIKEY, X-AUTH-SIGNATURE, X-AUTH-EPOCH, Content-Type
 // Endpoints:
@@ -29,7 +29,7 @@ import type {
   ExecutionFillEvent,
 } from './types.js';
 
-const BASE_URL = 'https://coinswitch.co';
+const BASE_URL = 'https://api-trading.coinswitch.co';
 const WS_URL = 'wss://ws.coinswitch.co/orderupdates';
 const WS_PATH = '/pro/realtime-rates-socket/spot/order-updates';
 const WS_NAMESPACE = '/orderupdates';
@@ -59,14 +59,6 @@ function mapStatus(s: string): OrderStatus {
 }
 type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'REJECTED' | 'EXPIRED';
 
-/** App symbols look like DOGEUSDT; CoinSwitch wants DOGE/USDT. Accepts BASE/QUOTE and BASE_QUOTE too. */
-export function toCoinSwitchSymbol(sym: string): string {
-  const s = String(sym).trim().toUpperCase().replace('_', '/');
-  if (s.includes('/')) return s;
-  const m = s.match(/^(.+?)(USDT|INR|USDC|BTC)$/);
-  return m ? `${m[1]}/${m[2]}` : s;
-}
-
 function toFixed8(n: number) {
   return Number(n.toFixed(8));
 }
@@ -87,10 +79,9 @@ function signRequest(apiKey: string, apiSecretHex: string, method: 'GET' | 'POST
   const message = `${method}${decodedPath}${epoch}`;
 
   // Validate Ed25519 secret key: must be exactly 32 bytes (64 hex chars)
-  const cleanSecret = String(apiSecretHex || '').trim().replace(/^0x/i, '');
-  const secretBytes = /^[0-9a-fA-F]*$/.test(cleanSecret) ? Buffer.from(cleanSecret, 'hex') : Buffer.alloc(0);
+  const secretBytes = Buffer.from(apiSecretHex, 'hex');
   if (secretBytes.length !== 32) {
-    throw new Error(`Invalid CoinSwitch secret key: expected 32 bytes (64 hex chars), got ${secretBytes.length}. Paste the 64-character hex secret from CoinSwitch PRO > API Trading.`);
+    throw new Error(`Invalid CoinSwitch secret key: expected 32 bytes (64 hex chars), got ${secretBytes.length}`);
   }
 
   const rawKey = secretBytes.slice(0, 32);
@@ -110,12 +101,11 @@ function signRequest(apiKey: string, apiSecretHex: string, method: 'GET' | 'POST
 }
 
 async function fetchSigned(apiKey: string, apiSecretHex: string, method: 'GET' | 'POST' | 'DELETE', path: string, query?: Record<string, string | number | boolean>, body?: any) {
+  const { headers, path: signedPath } = signRequest(apiKey, apiSecretHex, method, path, query);
   let lastErr: any;
   for (let attempt = 0; attempt < 2; attempt++) {
     let timeout: any;
     try {
-      // Sign on every attempt: the epoch is part of the signed message and goes stale on retry.
-      const { headers, path: signedPath } = signRequest(apiKey, apiSecretHex, method, path, query);
       const controller = new AbortController();
       timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       const init: any = { method, headers, signal: controller.signal };
@@ -125,16 +115,11 @@ async function fetchSigned(apiKey: string, apiSecretHex: string, method: 'GET' |
       const res = await fetch(`${BASE_URL}${signedPath}`, init);
       clearTimeout(timeout);
       const text = await res.text();
-      if (!res.ok) {
-        const err: any = new Error(`CoinSwitch ${method} ${path} HTTP ${res.status}: ${text.slice(0, 300)}`);
-        err.noRetry = res.status >= 400 && res.status < 500; // bad key/signature/IP: retrying cannot help
-        throw err;
-      }
+      if (!res.ok) throw new Error(`CoinSwitch ${method} ${path} HTTP ${res.status}: ${text}`);
       return text ? JSON.parse(text) : {};
-    } catch (err: any) {
+    } catch (err) {
       clearTimeout(timeout);
       lastErr = err;
-      if (err?.noRetry || err?.message?.startsWith('Invalid CoinSwitch secret')) break;
     }
   }
   throw lastErr;
@@ -167,7 +152,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
     const clientOrderId = req.clientOrderId || makeClientOrderId();
     const body: any = {
       side: req.side.toLowerCase(),
-      symbol: toCoinSwitchSymbol(req.symbol),
+      symbol: req.symbol.toUpperCase().replace('_', '/'),
       type: req.type === 'LIMIT' ? 'limit' : 'market',
       quantity: toFixed8(req.size),
       exchange: this.exchange,
@@ -205,7 +190,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
   async getOpenOrders(accountId: string, symbol?: string): Promise<OrderQueryResult[]> {
     if (accountId !== this.account.id) throw new Error('Account mismatch');
     const query: Record<string, string | number | boolean> = { open: true };
-    if (symbol) query.symbols = toCoinSwitchSymbol(symbol);
+    if (symbol) query.symbols = symbol.toUpperCase().replace('_', '/');
     const raw: any = await fetchSigned(this.apiKey, this.apiSecret, 'GET', '/trade/api/v2/orders', query);
     const data = raw.data || raw;
     const arr = Array.isArray(data.orders) ? data.orders : (Array.isArray(data) ? data : []);
@@ -215,25 +200,13 @@ class CoinSwitchAdapter implements ExecutionAdapter {
   async getAccountInfo(accountId: string): Promise<AccountInfoResult> {
     if (accountId !== this.account.id) throw new Error('Account mismatch');
     const raw: any = await fetchSigned(this.apiKey, this.apiSecret, 'GET', '/trade/api/v2/user/portfolio');
-    // Documented shape is { data: [ { currency, main_balance, blocked_balance_order, ... } ] }; tolerate wrappers.
-    const payload = raw?.data;
-    const arr: any[] = Array.isArray(payload) ? payload
-      : Array.isArray(payload?.portfolio) ? payload.portfolio
-      : Array.isArray(payload?.balances) ? payload.balances
-      : Array.isArray(raw) ? raw : [];
-    if (!arr.length && raw?.message && !Array.isArray(payload)) {
-      throw new Error(`CoinSwitch portfolio: ${raw.message}`);
-    }
-    const pick = (b: any, keys: string[]) => {
-      for (const k of keys) { const v = Number(b?.[k]); if (b?.[k] !== undefined && b?.[k] !== null && b?.[k] !== '' && Number.isFinite(v)) return v; }
-      return 0;
-    };
-    const balances: Balance[] = arr.map((b: any) => {
-      const free = pick(b, ['main_balance', 'available_balance', 'available', 'free', 'balance']);
-      const locked = pick(b, ['blocked_balance_order', 'blocked_balance', 'locked_balance', 'locked']);
-      const asset = String(b.currency ?? b.asset ?? b.coin ?? b.symbol ?? '').trim().toUpperCase();
-      return { asset, free, locked, total: free + locked };
-    });
+    const arr = Array.isArray(raw.data) ? raw.data : [];
+    const balances: Balance[] = arr.map((b: any) => ({
+      asset: b.currency,
+      free: Number(b.main_balance || 0),
+      locked: Number(b.blocked_balance_order || 0),
+      total: Number(b.main_balance || 0) + Number(b.blocked_balance_order || 0),
+    }));
     return { accountId: this.account.id, balances, raw };
   }
 

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useConfirm } from '../ui/Confirm.jsx';
+import DataTable from '../ui/DataTable.jsx';
 import {
   XCircle,
   Edit2,
@@ -9,12 +11,12 @@ import {
 } from 'lucide-react';
 
 export default function Trades() {
+  const confirm = useConfirm();
   const [orders, setOrders] = useState([]);
   const [trades, setTrades] = useState([]);
   const [viewTab, setViewTab] = useState('open'); // 'open', 'trades', 'all'
   const [selectedBroker, setSelectedBroker] = useState('all');
   const [loading, setLoading] = useState(false);
-  const [syncingOrders, setSyncingOrders] = useState(false);
   const [actionNotice, setActionNotice] = useState(null);
 
   // Pagination state
@@ -55,33 +57,6 @@ export default function Trades() {
     }
   };
 
-  const syncOrdersFromExchange = async () => {
-    setSyncingOrders(true);
-    try {
-      const accRes = await fetch('/api/accounts');
-      if (!accRes.ok) throw new Error('Failed to load accounts');
-      const accounts = await accRes.json();
-      const realAccounts = Array.isArray(accounts) ? accounts.filter((a) => a.mode === 'REAL') : [];
-      let totalSynced = 0;
-      for (const acc of realAccounts) {
-        const res = await fetch(`/api/accounts/${acc.id}/sync-orders`, { method: 'POST' });
-        if (res.ok) {
-          const data = await res.json();
-          totalSynced += data.synced || 0;
-        }
-      }
-      setActionNotice({
-        type: 'success',
-        text: `Synced ${totalSynced} order(s) from exchange(s).`,
-      });
-      fetchOrdersAndTrades();
-    } catch (err) {
-      setActionNotice({ type: 'error', text: err.message });
-    } finally {
-      setSyncingOrders(false);
-    }
-  };
-
   useEffect(() => {
     let isMounted = true;
     fetchOrdersAndTrades();
@@ -96,6 +71,7 @@ export default function Trades() {
   }, [ordersPage, ordersLimit, tradesPage, tradesLimit]);
 
   const handleCancelOrder = async (orderId, brokerName) => {
+    if (!(await confirm({ title: 'Cancel this order?', rows: [['Order', `#${orderId}`], ['Exchange', String(brokerName || '').toUpperCase()]], confirmLabel: 'Cancel order', live: false }))) return;
     try {
       const res = await fetch(`/api/orders/${orderId}`, { method: 'DELETE' });
       const data = await res.json();
@@ -218,15 +194,6 @@ export default function Trades() {
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button
-            onClick={syncOrdersFromExchange}
-            disabled={syncingOrders}
-            className="p-2 bg-slate-800 border border-slate-700 hover:border-emerald-500 text-slate-400 hover:text-emerald-400 rounded-lg transition-colors"
-            title="Sync orders from exchange"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${syncingOrders ? 'animate-spin' : ''}`} />
-            <span className="sr-only">Sync Orders from Exchange</span>
-          </button>
         </div>
       </div>
 
@@ -261,64 +228,34 @@ export default function Trades() {
             <span className="text-xs font-semibold text-white">Execution Fills & Completed Trades</span>
             <span className="text-[11px] text-slate-500 font-mono">Count: {filteredTrades.length}</span>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-                <tr>
-                  <th className="py-2.5 px-4">Trade ID</th>
-                  <th className="py-2.5 px-4">Exchange</th>
-                  <th className="py-2.5 px-4">Symbol</th>
-                  <th className="py-2.5 px-4">Side</th>
-                  <th className="py-2.5 px-4 text-right">Price</th>
-                  <th className="py-2.5 px-4 text-right">Size</th>
-                  <th className="py-2.5 px-4 text-right">Total Value</th>
-                  <th className="py-2.5 px-4 text-right">Fee</th>
-                  <th className="py-2.5 px-4 text-right">Timestamp</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-                {filteredTrades.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="py-8 text-center text-slate-500 font-sans">
-                      No executed trades recorded yet. Place an order on the terminal to simulate fills!
-                    </td>
-                  </tr>
-                ) : (
-                  filteredTrades.map((t) => (
-                    <tr key={t.id} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-2.5 px-4 font-sans text-slate-300 font-medium">{t.id}</td>
-                      <td className="py-2.5 px-4 font-sans text-slate-300 capitalize">{t.broker}</td>
-                      <td className="py-2.5 px-4 font-sans font-bold text-white">{t.symbol}</td>
-                      <td className="py-2.5 px-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          t.side === 'BUY' ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
-                        }`}>
-                          {t.side}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-right text-slate-200">${t.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                      <td className="py-2.5 px-4 text-right text-slate-200">{t.size}</td>
-                      <td className="py-2.5 px-4 text-right text-slate-200">${t.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                      <td className="py-2.5 px-4 text-right text-slate-400">
-                        ${t.fee.toFixed(4)}
-                        {t.liquidity && (
-                          <span
-                            className={`ml-1.5 rounded px-1 py-px text-[9px] font-bold align-middle ${t.liquidity === 'MAKER' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}
-                            title={`${t.liquidity === 'MAKER' ? 'Maker' : 'Taker'} fill${t.slippagePct ? ` · slippage ${t.slippagePct}% vs ${t.refPrice}` : ''}`}
-                          >
-                            {t.liquidity === 'MAKER' ? 'M' : 'T'}{t.slippagePct ? ` ${t.slippagePct}%` : ''}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-4 text-right text-slate-500 text-[11px] font-sans">
-                        {new Date(t.timestamp).toLocaleTimeString()}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            rows={filteredTrades}
+            empty="No executed trades recorded yet. Place an order on the terminal to simulate fills!"
+            columns={[
+              { key: 'symbol', header: 'Symbol', primary: true, mono: false, render: (t) => <span><b className="text-ink">{t.symbol}</b> <span className="ml-1 text-xs capitalize text-muted">{t.broker}</span></span> },
+              { key: 'id', header: 'Trade ID', mono: false },
+              { key: 'side', header: 'Side', mono: false, render: (t) => (
+                <span className={`rounded px-2 py-0.5 text-xs font-bold ${t.side === 'BUY' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>{t.side === 'BUY' ? '▲' : '▼'} {t.side}</span>
+              ) },
+              { key: 'price', header: 'Price', align: 'right', render: (t) => `$${t.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+              { key: 'size', header: 'Size', align: 'right' },
+              { key: 'value', header: 'Total Value', align: 'right', render: (t) => `$${t.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+              { key: 'fee', header: 'Fee', align: 'right', render: (t) => (
+                <span className="text-muted">
+                  ${t.fee.toFixed(4)}
+                  {t.liquidity && (
+                    <span
+                      className={`ml-1.5 rounded px-1 py-px align-middle text-xs font-bold ${t.liquidity === 'MAKER' ? 'bg-up/15 text-up' : 'bg-raised text-muted'}`}
+                      title={`${t.liquidity === 'MAKER' ? 'Maker' : 'Taker'} fill${t.slippagePct ? ` · slippage ${t.slippagePct}% vs ${t.refPrice}` : ''}`}
+                    >
+                      {t.liquidity === 'MAKER' ? 'M' : 'T'}{t.slippagePct ? ` ${t.slippagePct}%` : ''}
+                    </span>
+                  )}
+                </span>
+              ) },
+              { key: 'timestamp', header: 'Time', align: 'right', mono: false, render: (t) => <span className="text-xs text-muted">{new Date(t.timestamp).toLocaleTimeString()}</span> },
+            ]}
+          />
         </div>
       ) : (
         /* Orders Table */
@@ -329,100 +266,44 @@ export default function Trades() {
             </span>
             <span className="text-[11px] text-slate-500 font-mono">Count: {filteredOrders.length}</span>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-                <tr>
-                  <th className="py-2.5 px-4">Order ID</th>
-                  <th className="py-2.5 px-4">Exchange</th>
-                  <th className="py-2.5 px-4">Symbol</th>
-                  <th className="py-2.5 px-4">Side / Type</th>
-                  <th className="py-2.5 px-4 text-right">Price</th>
-                  <th className="py-2.5 px-4 text-right">Size (Filled)</th>
-                  <th className="py-2.5 px-4">Leverage</th>
-                  <th className="py-2.5 px-4">Status</th>
-                  <th className="py-2.5 px-4 text-right">Time</th>
-                  <th className="py-2.5 px-4 text-center">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-                {filteredOrders.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="py-8 text-center text-slate-500 font-sans">
-                      No orders found matching the active filter.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredOrders.map((o) => {
-                    return (
-                      <tr key={o.id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-2.5 px-4 font-sans text-slate-300 font-medium">{o.id}</td>
-                        <td className="py-2.5 px-4 font-sans text-slate-300 capitalize">{o.broker}</td>
-                        <td className="py-2.5 px-4 font-sans font-bold text-white">{o.symbol}</td>
-                        <td className="py-2.5 px-4 font-sans">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold mr-1 ${
-                            o.side === 'BUY' ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
-                          }`}>
-                            {o.side}
-                          </span>
-                          <span className="text-slate-400 text-[11px]">{o.orderType}</span>
-                        </td>
-                        <td className="py-2.5 px-4 text-right text-slate-200">
-                          ${o.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-2.5 px-4 text-right text-slate-200">
-                          {o.size} <span className="text-slate-500">({o.filledSize})</span>
-                        </td>
-                        <td className="py-2.5 px-4 text-slate-400">{o.leverage}x</td>
-                        <td className="py-2.5 px-4 font-sans">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              o.status === 'FILLED'
-                                ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
-                                : o.status === 'OPEN'
-                                ? 'text-cyan-400 bg-cyan-500/10 border border-cyan-500/20'
-                                : o.status === 'REJECTED'
-                                ? 'text-rose-400 bg-rose-500/10 border border-rose-500/20'
-                                : 'text-slate-400 bg-slate-800 border border-slate-700'
-                            }`}
-                          >
-                            {o.status}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-4 text-right text-slate-500 text-[11px] font-sans">
-                          {new Date(o.timestamp).toLocaleTimeString()}
-                        </td>
-                        <td className="py-2.5 px-4 text-center font-sans">
-                          {o.status === 'OPEN' ? (
-                            <div className="flex items-center justify-center gap-2">
-                              <button
-                                onClick={() => handleOpenModify(o)}
-                                className="px-2 py-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded flex items-center gap-1 transition-colors"
-                                title={o.broker === 'coinswitch' ? 'Cancel & Replace order on CoinSwitch' : 'Edit order price/size'}
-                              >
-                                <Edit2 className="w-3 h-3" />
-                                <span>Modify</span>
-                              </button>
-                              <button
-                                onClick={() => handleCancelOrder(o.id, o.broker)}
-                                className="px-2 py-1 text-[11px] bg-rose-950/60 hover:bg-rose-900/80 text-rose-400 hover:text-rose-200 border border-rose-800/60 rounded flex items-center gap-1 transition-colors"
-                                title="Cancel Order"
-                              >
-                                <XCircle className="w-3 h-3" />
-                                <span>Cancel</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-slate-600 text-xs">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            rows={filteredOrders}
+            empty="No orders found matching the active filter."
+            columns={[
+              { key: 'symbol', header: 'Symbol', primary: true, mono: false, render: (o) => (
+                <span><b className="text-ink">{o.symbol}</b> <span className="ml-1 text-xs capitalize text-muted">{o.broker}</span></span>
+              ) },
+              { key: 'id', header: 'Order ID', mono: false },
+              { key: 'side', header: 'Side / Type', mono: false, render: (o) => (
+                <span>
+                  <span className={`mr-1 rounded px-1.5 py-0.5 text-xs font-bold ${o.side === 'BUY' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>
+                    {o.side === 'BUY' ? '▲' : '▼'} {o.side}
+                  </span>
+                  <span className="text-xs text-muted">{o.orderType}</span>
+                </span>
+              ) },
+              { key: 'price', header: 'Price', align: 'right', render: (o) => `$${o.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+              { key: 'size', header: 'Size (Filled)', align: 'right', render: (o) => <>{o.size} <span className="text-muted">({o.filledSize})</span></> },
+              { key: 'leverage', header: 'Leverage', render: (o) => `${o.leverage}x` },
+              { key: 'status', header: 'Status', mono: false, render: (o) => {
+                const tone = o.status === 'FILLED' ? 'text-up bg-up/10' : o.status === 'OPEN' ? 'text-live bg-live/10' : o.status === 'REJECTED' ? 'text-down bg-down/10' : 'text-muted bg-raised';
+                return <span className={`rounded px-2 py-0.5 text-xs font-bold ${tone}`}>{o.status}</span>;
+              } },
+              { key: 'timestamp', header: 'Time', align: 'right', mono: false, render: (o) => <span className="text-xs text-muted">{new Date(o.timestamp).toLocaleTimeString()}</span> },
+              { key: 'actions', header: 'Actions', align: 'center', actions: true, mono: false, render: (o) => (
+                o.status === 'OPEN' ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <button onClick={() => handleOpenModify(o)} className="flex items-center gap-1 rounded-lg border border-line bg-raised px-3 py-1.5 text-xs font-semibold text-ink" title={o.broker === 'coinswitch' ? 'Cancel & Replace order on CoinSwitch' : 'Edit order price/size'}>
+                      <Edit2 className="size-3" /> Modify
+                    </button>
+                    <button onClick={() => handleCancelOrder(o.id, o.broker)} className="flex items-center gap-1 rounded-lg border border-down/50 bg-down/10 px-3 py-1.5 text-xs font-semibold text-down" title="Cancel Order">
+                      <XCircle className="size-3" /> Cancel
+                    </button>
+                  </div>
+                ) : <span className="text-muted">—</span>
+              ) },
+            ]}
+          />
         </div>
       )}
 

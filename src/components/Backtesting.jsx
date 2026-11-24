@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import DataTable from '../ui/DataTable.jsx';
 import {
   Sparkles,
   Play,
@@ -341,94 +342,64 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-          {/* Pair Selector */}
-          <div>
-            <label className="text-[11px] text-slate-400 font-medium">Momentum Pair</label>
-            <select
-              value={selectedSymbol}
-              onChange={(e) => setSelectedSymbol(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white font-mono mt-1 focus:outline-none focus:border-emerald-500"
-            >
-              {tickers.slice(0, 40).map((t) => (
-                <option key={t.symbol} value={t.symbol}>
-                  #{t.momentumRank} {t.symbol}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Timeframe */}
-          <div>
-            <label className="text-[11px] text-slate-400 font-medium">Historical Sample</label>
-            <select
-              value={timeframe}
-              onChange={(e) => setTimeframe(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white mt-1 focus:outline-none focus:border-emerald-500 font-mono"
-            >
-              <option value="24h">24 Hours (15m bars)</option>
-              <option value="7d">7 Days (1h bars)</option>
-              <option value="30d">30 Days (1h bars)</option>
-              <option value="60d">60 Days (4h bars)</option>
-            </select>
-          </div>
-
-          {/* Initial Capital */}
-          <div>
-            <label className="text-[11px] text-slate-400 font-medium">Initial Capital (USDT)</label>
-            <input
-              type="number"
-              value={initialCapital}
-              onChange={(e) => setInitialCapital(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white font-mono mt-1 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Lower Price */}
-          <div>
-            <label className="text-[11px] text-slate-400 font-medium">Lower Price (USDT)</label>
-            <input
-              type="number"
-              step="any"
-              value={gridLower}
-              onChange={(e) => setGridLower(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white font-mono mt-1 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Upper Price */}
-          <div>
-            <label className="text-[11px] text-slate-400 font-medium">Upper Price (USDT)</label>
-            <input
-              type="number"
-              step="any"
-              value={gridUpper}
-              onChange={(e) => setGridUpper(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white font-mono mt-1 focus:outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          {/* Grid Count & Mode */}
-          <div>
-            <label className="text-[11px] text-slate-400 font-medium">Grids & Mode</label>
-            <div className="flex gap-1 mt-1">
-              <input
-                type="number"
-                min="3"
-                max="45"
-                value={gridCount}
-                onChange={(e) => setGridCount(e.target.value)}
-                className="w-16 bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-xs text-purple-300 font-bold font-mono focus:outline-none focus:border-purple-500"
-              />
-              <select
-                value={gridMode}
-                onChange={(e) => setGridMode(e.target.value)}
-                className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-emerald-500 font-mono"
-              >
-                <option value="GEOMETRIC">Geom (%)</option>
-                <option value="ARITHMETIC">Arith ($)</option>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+          {/* Market and capital */}
+          <fieldset className="space-y-3">
+            <legend className="mb-1 text-sm font-semibold text-ink">Market</legend>
+            <label className="block"><span className="text-xs font-medium text-muted">Momentum pair</span>
+              <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} className="w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink mt-1">
+                {tickers.slice(0, 40).map((t) => (
+                  <option key={t.symbol} value={t.symbol}>#{t.momentumRank} {t.symbol}</option>
+                ))}
               </select>
+            </label>
+            <label className="block"><span className="text-xs font-medium text-muted">Historical sample</span>
+              <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} className="w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink mt-1">
+                <option value="24h">24 hours (15m bars)</option>
+                <option value="7d">7 days (1h bars)</option>
+                <option value="30d">30 days (1h bars)</option>
+                <option value="60d">60 days (4h bars)</option>
+              </select>
+            </label>
+            <label className="block"><span className="text-xs font-medium text-muted">Initial capital (USDT)</span>
+              <input type="number" value={initialCapital} onChange={(e) => setInitialCapital(e.target.value)} className="w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink mt-1" />
+            </label>
+          </fieldset>
+
+          {/* Grid */}
+          <fieldset className="space-y-3">
+            <legend className="mb-1 text-sm font-semibold text-ink">Grid</legend>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block"><span className="text-xs font-medium text-muted">Lower price</span>
+                <input type="number" step="any" value={gridLower} onChange={(e) => setGridLower(e.target.value)} className="w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink mt-1" />
+              </label>
+              <label className="block"><span className="text-xs font-medium text-muted">Upper price</span>
+                <input type="number" step="any" value={gridUpper} onChange={(e) => setGridUpper(e.target.value)} className="w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink mt-1" />
+              </label>
             </div>
+            <label className="block"><span className="text-xs font-medium text-muted">Number of grids (3 to 45)</span>
+              <input type="number" min="3" max="45" value={gridCount} onChange={(e) => setGridCount(e.target.value)} className="w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink mt-1" />
+            </label>
+            <div>
+              <span className="text-xs font-medium text-muted">Spacing</span>
+              <div role="group" aria-label="Grid spacing" className="mt-1 flex gap-1 rounded-xl border border-line bg-canvas p-1">
+                {[['GEOMETRIC', 'Geometric (%)'], ['ARITHMETIC', 'Arithmetic ($)']].map(([v, l]) => (
+                  <button type="button" key={v} onClick={() => setGridMode(v)} aria-pressed={gridMode === v} className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold ${gridMode === v ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}`}>{l}</button>
+                ))}
+              </div>
+            </div>
+          </fieldset>
+
+          {/* Plain-language summary */}
+          <div className="rounded-xl border border-line bg-canvas p-4">
+            <p className="text-sm font-semibold text-ink">What this will test</p>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              A {gridMode === 'GEOMETRIC' ? 'geometric' : 'arithmetic'} grid of {gridCount || '?'} levels on <b className="text-ink">{selectedSymbol}</b>
+              {gridLower && gridUpper ? <> between <b className="font-mono text-ink">{gridLower}</b> and <b className="font-mono text-ink">{gridUpper}</b></> : ' (set a price range, or use a quick range below)'}
+              , over the last <b className="text-ink">{timeframe}</b>, starting with <b className="font-mono text-ink">${initialCapital || 0}</b>.
+            </p>
+            <p className="mt-3 text-xs text-muted">Uses real past prices and a {(Number(feeRate) * 100).toFixed(2)}% fee per trade. Past results do not predict future returns.</p>
+            <span className="mt-3 inline-block rounded-md bg-paper/15 px-2 py-0.5 text-[11px] font-bold text-paper">SIMULATION ONLY</span>
           </div>
         </div>
 
@@ -723,114 +694,39 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
           )}
 
           {optimizedStrategies && !optimizing && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-800 text-[10px] text-slate-400 font-mono uppercase tracking-wider">
-                    <th className="py-2.5 px-3">Strategy Model</th>
-                    <th className="py-2.5 px-3">Range & Levels</th>
-                    <th className="py-2.5 px-3">Mode</th>
-                    <th className="py-2.5 px-3">Net Profit</th>
-                    <th className="py-2.5 px-3">Est. APR</th>
-                    <th className="py-2.5 px-3">Max DD</th>
-                    <th className="py-2.5 px-3">Sweeps</th>
-                    <th className="py-2.5 px-3">Sharpe</th>
-                    <th className="py-2.5 px-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {optimizedStrategies.map((strat) => {
-                    const isWinner = strat.isWinner;
-                    return (
-                      <tr
-                        key={strat.id}
-                        className={`transition-colors ${
-                          isWinner
-                            ? 'bg-amber-950/20 hover:bg-amber-950/30'
-                            : 'hover:bg-slate-800/40'
-                        }`}
-                      >
-                        <td className="py-3 px-3">
-                          <div className="flex items-center gap-2">
-                            {isWinner && (
-                              <span className="p-1 rounded bg-amber-500/20 border border-amber-400/40 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]">
-                                <Award className="w-3.5 h-3.5" />
-                              </span>
-                            )}
-                            <div>
-                              <div className="font-bold text-white text-xs font-sans flex items-center gap-1.5">
-                                <span>{strat.name}</span>
-                                {isWinner && (
-                                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-400/20 text-amber-300 border border-amber-400/40 font-bold">
-                                    TOP PICK
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-sans block mt-0.5">
-                                {strat.description}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="py-3 px-3 text-slate-300">
-                          <div>${strat.lowerPrice.toLocaleString()} - ${strat.upperPrice.toLocaleString()}</div>
-                          <span className="text-[10px] text-purple-300 font-semibold">{strat.gridCount} rungs</span>
-                        </td>
-
-                        <td className="py-3 px-3">
-                          <span className={`text-[10px] px-2 py-0.5 rounded border ${
-                            strat.gridMode === 'GEOMETRIC'
-                              ? 'text-purple-300 bg-purple-500/10 border-purple-500/30'
-                              : 'text-cyan-300 bg-cyan-500/10 border-cyan-500/30'
-                          }`}>
-                            {strat.gridMode}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-3">
-                          <div className="font-bold text-emerald-400">
-                            {strat.netProfit >= 0 ? '+' : '-'}${Math.abs(strat.netProfit)}
-                          </div>
-                          <span className="text-[10px] text-slate-400">                            {strat.netReturnPercent >= 0 ? '+' : '-'}${Math.abs(strat.netReturnPercent)}%
-</span>
-                        </td>
-
-                        <td className="py-3 px-3 text-emerald-300 font-bold">
-                          ~{strat.annualizedApr}%
-                        </td>
-
-                        <td className="py-3 px-3 text-rose-400">
-                          -{strat.maxDrawdownPercent}%
-                        </td>
-
-                        <td className="py-3 px-3 text-slate-200">
-                          {strat.completedSweeps} sweeps
-                        </td>
-
-                        <td className="py-3 px-3 text-cyan-300 font-bold">
-                          {strat.sharpeRatio}
-                        </td>
-
-                        <td className="py-3 px-3 text-right">
-                          <button
-                            onClick={() => applyStrategy(strat)}
-                            className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 ml-auto ${
-                              isWinner
-                                ? 'bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
-                                : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
-                            }`}
-                          >
-                            <span>Apply</span>
-                            <ArrowRight className="w-3 h-3" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={optimizedStrategies}
+              rowKey={(st) => st.id}
+              columns={[
+                { key: 'name', header: 'Strategy', primary: true, mono: false, render: (st) => (
+                  <span className="flex items-start gap-2">
+                    {st.isWinner && <Award className="mt-0.5 size-4 shrink-0 text-live" aria-hidden />}
+                    <span>
+                      <b className="text-ink">{st.name}</b>
+                      {st.isWinner && <span className="ml-2 rounded bg-live/15 px-1.5 py-0.5 text-[10px] font-bold text-live">TOP PICK</span>}
+                      <span className="mt-0.5 block text-xs text-muted">{st.description}</span>
+                    </span>
+                  </span>
+                ) },
+                { key: 'range', header: 'Range & levels', render: (st) => <span>${st.lowerPrice.toLocaleString()} – ${st.upperPrice.toLocaleString()}<span className="block text-xs text-accent">{st.gridCount} rungs</span></span> },
+                { key: 'gridMode', header: 'Mode', mono: false, render: (st) => <span className="rounded bg-raised px-2 py-0.5 text-xs text-ink2">{st.gridMode}</span> },
+                { key: 'netProfit', header: 'Net profit', align: 'right', render: (st) => (
+                  <span className={st.netProfit >= 0 ? 'text-up' : 'text-down'}>
+                    <b>{st.netProfit >= 0 ? '▲ +' : '▼ −'}${Math.abs(st.netProfit)}</b>
+                    <span className="block text-xs">{st.netReturnPercent >= 0 ? '+' : '−'}{Math.abs(st.netReturnPercent)}%</span>
+                  </span>
+                ) },
+                { key: 'annualizedApr', header: 'Est. APR', align: 'right', render: (st) => `~${st.annualizedApr}%` },
+                { key: 'maxDrawdownPercent', header: 'Max DD', align: 'right', render: (st) => <span className="text-down">−{st.maxDrawdownPercent}%</span> },
+                { key: 'completedSweeps', header: 'Sweeps', align: 'right' },
+                { key: 'sharpeRatio', header: 'Sharpe', align: 'right' },
+                { key: 'apply', header: 'Action', align: 'center', actions: true, mono: false, render: (st) => (
+                  <button onClick={() => applyStrategy(st)} className={`inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold md:w-auto ${st.isWinner ? 'bg-live text-canvas' : 'border border-line bg-raised text-ink'}`}>
+                    Apply <ArrowRight className="size-3" />
+                  </button>
+                ) },
+              ]}
+            />
           )}
         </div>
       )}
@@ -918,54 +814,20 @@ export default function Backtesting({ tickers, onDeployToLiveBot }) {
             </span>
           </div>
 
-          <div className="overflow-x-auto max-h-96">
-            <table className="w-full text-left border-collapse text-xs font-mono">
-              <thead>
-                <tr className="border-b border-slate-800 text-[10px] text-slate-400 uppercase tracking-wider sticky top-0 bg-slate-900">
-                  <th className="py-2 px-3">Candle Time</th>
-                  <th className="py-2 px-3">Side</th>
-                  <th className="py-2 px-3">Fill Price</th>
-                  <th className="py-2 px-3">Quantity</th>
-                  <th className="py-2 px-3">Turnover</th>
-                  <th className="py-2 px-3">Fee</th>
-                  <th className="py-2 px-3">Harvested Profit</th>
-                  <th className="py-2 px-3 text-right">Cash Balance</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {backtestResult.tradeLogs?.map((t) => (
-                  <tr key={t.id} className="hover:bg-slate-800/40">
-                    <td className="py-2 px-3 text-slate-400 text-[11px]">{t.timeLabel}</td>
-                    <td className="py-2 px-3">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        t.side === 'BUY'
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                      }`}>
-                        {t.side}
-                      </span>
-                    </td>
-                    <td className="py-2 px-3 text-white font-bold">${t.price?.toLocaleString()}</td>
-                    <td className="py-2 px-3 text-slate-300">{t.size}</td>
-                    <td className="py-2 px-3 text-slate-300">${t.cost}</td>
-                    <td className="py-2 px-3 text-slate-500">${t.fee}</td>
-                    <td className="py-2 px-3">
-                      {t.profit > 0 ? (
-                        <span className="text-emerald-400 font-bold">
-                          {(t.profit || 0) >= 0 ? '+' : ''}${t.profit}
-                        </span>
-                      ) : (
-                        <span className="text-slate-600">—</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 text-right text-slate-300 font-mono">
-                      ${t.cashBalance}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            rows={backtestResult.tradeLogs || []}
+            empty="No fills in this backtest."
+            columns={[
+              { key: 'timeLabel', header: 'Candle time', primary: true, render: (t) => <span className="text-xs text-muted">{t.timeLabel}</span> },
+              { key: 'side', header: 'Side', mono: false, render: (t) => <span className={`rounded px-1.5 py-0.5 text-xs font-bold ${t.side === 'BUY' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>{t.side === 'BUY' ? '▲' : '▼'} {t.side}</span> },
+              { key: 'price', header: 'Fill price', align: 'right', render: (t) => <b className="text-ink">${t.price?.toLocaleString()}</b> },
+              { key: 'size', header: 'Quantity', align: 'right' },
+              { key: 'cost', header: 'Turnover', align: 'right', render: (t) => `$${t.cost}` },
+              { key: 'fee', header: 'Fee', align: 'right', render: (t) => <span className="text-muted">${t.fee}</span> },
+              { key: 'profit', header: 'Harvested profit', align: 'right', render: (t) => (t.profit > 0 ? <b className="text-up">+${t.profit}</b> : <span className="text-muted">—</span>) },
+              { key: 'cashBalance', header: 'Cash balance', align: 'right', render: (t) => `$${t.cashBalance}` },
+            ]}
+          />
         </div>
       )}
     </div>

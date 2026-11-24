@@ -1,7 +1,7 @@
 import js from '@eslint/js';
 
 const globals = {
-  window: 'readonly', document: 'readonly', localStorage: 'readonly', fetch: 'writable', WebSocket: 'readonly',
+  window: 'readonly', document: 'readonly', getComputedStyle: 'readonly', localStorage: 'readonly', fetch: 'writable', WebSocket: 'readonly',
   console: 'readonly', process: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly',
   clearInterval: 'readonly', URL: 'readonly', AbortController: 'readonly', Buffer: 'readonly', navigator: 'readonly',
   URLSearchParams: 'readonly', structuredClone: 'readonly', performance: 'readonly', crypto: 'readonly',

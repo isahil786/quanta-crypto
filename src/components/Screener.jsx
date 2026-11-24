@@ -1,22 +1,61 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import DataTable from '../ui/DataTable.jsx';
 import {
   Search,
   Zap,
-  ArrowUpDown,
   ShieldCheck,
 } from 'lucide-react';
 
-export default function Screener({ tickers, onSelectPair, onOpenTradingView }) {
+// Squarified treemap: lays items (each with .area, summing to w*h) into rectangles that stay close to square.
+function squarify(items, x, y, w, h) {
+  const out = [];
+  const rest = items.slice();
+  const worst = (row, side) => {
+    const sum = row.reduce((a, r) => a + r.area, 0);
+    const mx = Math.max(...row.map((r) => r.area));
+    const mn = Math.min(...row.map((r) => r.area));
+    return Math.max((side * side * mx) / (sum * sum), (sum * sum) / (side * side * mn));
+  };
+  while (rest.length) {
+    const side = Math.min(w, h);
+    const row = [];
+    while (rest.length && (row.length === 0 || worst([...row, rest[0]], side) <= worst(row, side))) row.push(rest.shift());
+    const sum = row.reduce((a, r) => a + r.area, 0);
+    if (w >= h) {
+      const colW = sum / h; let cy = y;
+      row.forEach((r) => { const rh = r.area / colW; out.push({ item: r, x, y: cy, w: colW, h: rh }); cy += rh; });
+      x += colW; w -= colW;
+    } else {
+      const rowH = sum / w; let cx = x;
+      row.forEach((r) => { const rw = r.area / rowH; out.push({ item: r, x: cx, y, w: rw, h: rowH }); cx += rw; });
+      y += rowH; h -= rowH;
+    }
+  }
+  return out;
+}
+
+// Tiny 24h line. Colour follows direction and an arrow is not needed because the change column already carries one.
+function Sparkline({ closes }) {
+  if (!closes || closes.length < 2) return <span className="text-muted">—</span>;
+  const lo = Math.min(...closes); const hi = Math.max(...closes); const span = hi - lo || 1;
+  const pts = closes.map((c, i) => `${(i / (closes.length - 1)) * 80},${26 - ((c - lo) / span) * 24}`).join(' ');
+  const up = closes[closes.length - 1] >= closes[0];
+  return (
+    <svg width="80" height="28" viewBox="0 0 80 28" role="img" aria-label={up ? '24 hour trend up' : '24 hour trend down'} className="mx-auto">
+      <polyline points={pts} fill="none" strokeWidth="1.6" className={up ? 'stroke-up' : 'stroke-down'} />
+    </svg>
+  );
+}
+
+export default function Screener({ tickers, onSelectPair }) {
+  const [view, setView] = useState('table'); // 'table' | 'heatmap'
+  const mapRef = useRef(null);
+  const [mapW, setMapW] = useState(0);
+  const [spark, setSpark] = useState({}); // symbol -> closes over the last 24 hourly candles
   const [search, setSearch] = useState('');
   const [filterMode, setFilterMode] = useState('all'); // 'all', 'halal', 'gainers', 'volume', 'breakouts', 'top10'
   const [sortBy, setSortBy] = useState('momentumRank');
   const [sortAsc, setSortAsc] = useState(true);
-
-  const openTradingView = (symbol) => {
-    const tvSymbol = `BINANCE:${symbol}`;
-    const url = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`;
-    (onOpenTradingView ?? ((u) => window.open(u, '_blank')))(url);
-  };
 
   // Live halal coin data fetched from the server (merged with live Binance prices).
   const [halalCoins, setHalalCoins] = useState([]);
@@ -120,6 +159,47 @@ export default function Screener({ tickers, onSelectPair, onOpenTradingView }) {
 
   const isHalalActive = filterMode === 'halal';
 
+  // Heatmap width, so the treemap can pick a sensible height for phones and desktops
+  useEffect(() => {
+    if (view !== 'heatmap' || !mapRef.current) return undefined;
+    setMapW(mapRef.current.clientWidth);
+    const ro = new ResizeObserver(([e]) => setMapW(e.contentRect.width));
+    ro.observe(mapRef.current);
+    return () => ro.disconnect();
+  }, [view]);
+
+  // Sparklines: fetch the first 20 listed rows only (one klines call each, cached), not all 100.
+  const sparkKey = processed.slice(0, 20).map((r) => r.symbol).join(',');
+  useEffect(() => {
+    let alive = true;
+    const todo = sparkKey.split(',').filter((sym) => sym && !spark[sym]);
+    (async () => {
+      for (let i = 0; i < todo.length && alive; i += 5) {
+        const batch = todo.slice(i, i + 5);
+        const got = await Promise.all(batch.map(async (sym) => {
+          try {
+            const res = await fetch(`/api/market/klines?symbol=${sym}&interval=1h&limit=24`);
+            if (!res.ok) return [sym, []];
+            return [sym, (await res.json()).map((k) => k.close)];
+          } catch { return [sym, []]; }
+        }));
+        if (alive) setSpark((prev) => ({ ...prev, ...Object.fromEntries(got) }));
+      }
+    })();
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sparkKey]);
+
+  const byVolume = processed.slice().sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0));
+
+  // Treemap: tile area is proportional to 24h turnover. A small floor (0.5% of the total) keeps tiny coins clickable.
+  const mapItems = byVolume.slice(0, 60);
+  const mapH = mapW < 640 ? Math.round(mapW * 1.3) : Math.round(mapW * 0.5);
+  const totalVol = mapItems.reduce((a, r) => a + (r.quoteVolume || 0), 0) || 1;
+  const floored = mapItems.map((r) => ({ r, v: Math.max(r.quoteVolume || 0, totalVol * 0.005) }));
+  const flooredSum = floored.reduce((a, t) => a + t.v, 0);
+  const tiles = mapW > 0 ? squarify(floored.map((t) => ({ ...t.r, area: (t.v / flooredSum) * mapW * mapH })), 0, 0, mapW, mapH) : [];
+
   return (
     <div className="flex flex-col gap-6">
       {/* Header */}
@@ -220,134 +300,80 @@ export default function Screener({ tickers, onSelectPair, onOpenTradingView }) {
             Showing {processed.length} of {isHalalActive ? (halalMeta?.listed ?? halalCoins.length) : tickers.length}
             {isHalalActive ? ' live halal coins' : ' live momentum coins'}
           </span>
+          <div role="group" aria-label="View" className="flex gap-1 rounded-lg border border-line bg-surface p-0.5">
+            {[['table', 'Table'], ['heatmap', 'Heatmap']].map(([v, l]) => (
+              <button key={v} onClick={() => setView(v)} aria-pressed={view === v} className={`rounded-md px-2.5 py-1 text-xs font-semibold ${view === v ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}`}>{l}</button>
+            ))}
+          </div>
           <span className="font-mono text-[11px] text-emerald-400 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             {isHalalActive ? 'Live halal feed' : 'REST refresh every 3s'}
           </span>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-              <tr>
-                <th className="py-2.5 px-4 cursor-pointer" onClick={() => handleSort(isHalalActive ? 'halalRank' : 'momentumRank')}>
-                  <div className="flex items-center gap-1">
-                    <span>Rank</span>
-                    <ArrowUpDown className="w-3 h-3 text-slate-600" />
-                  </div>
-                </th>
-                <th className="py-2.5 px-4 cursor-pointer" onClick={() => handleSort('symbol')}>
-                  <div className="flex items-center gap-1">
-                    <span>Market Pair</span>
-                    <ArrowUpDown className="w-3 h-3 text-slate-600" />
-                  </div>
-                </th>
-                <th className="py-2.5 px-4 text-right cursor-pointer" onClick={() => handleSort('price')}>
-                  <div className="flex items-center justify-end gap-1">
-                    <span>Live Mark Price</span>
-                    <ArrowUpDown className="w-3 h-3 text-slate-600" />
-                  </div>
-                </th>
-                <th className="py-2.5 px-4 text-right cursor-pointer" onClick={() => handleSort('change24h')}>
-                  <div className="flex items-center justify-end gap-1">
-                    <span>24h Momentum %</span>
-                    <ArrowUpDown className="w-3 h-3 text-slate-600" />
-                  </div>
-                </th>
-                <th className="py-2.5 px-4 text-right cursor-pointer" onClick={() => handleSort('quoteVolume')}>
-                  <div className="flex items-center justify-end gap-1">
-                    <span>24h Turnover (USDT)</span>
-                    <ArrowUpDown className="w-3 h-3 text-slate-600" />
-                  </div>
-                </th>
-                <th className="py-2.5 px-4 text-center cursor-pointer" onClick={() => handleSort('rangePosition')}>
-                  <div className="flex items-center justify-center gap-1">
-                    <span>24h Range Position</span>
-                    <ArrowUpDown className="w-3 h-3 text-slate-600" />
-                  </div>
-                </th>
-                <th className="py-2.5 px-4 text-right">24h High / Low</th>
-                <th className="py-2.5 px-4 text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-              {processed.map((pair) => {
-                const isPositive = Number(pair.change24h || 0) >= 0;
-                const rank = pair.halalRank ?? pair.momentumRank;
-                return (
-                  <tr key={pair.symbol} className="hover:bg-slate-800/30 transition-colors">
-                    <td className="py-3 px-4 font-sans font-bold text-slate-400">
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold ${
-                        rank <= 3
-                          ? 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
-                          : rank <= 10
-                          ? 'text-cyan-300 bg-cyan-500/10 border border-cyan-500/20'
-                          : isHalalActive
-                          ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
-                          : 'text-slate-400'
-                      }`}>
-                        #{rank}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 font-sans">
-                      <div className="font-bold text-white flex items-center gap-1.5 cursor-pointer hover:text-emerald-400 transition-colors" onClick={() => openTradingView(pair.symbol)} title="Open on TradingView">
-                        <span>{pair.symbol}</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400">{pair.base} / USDT</div>
-                    </td>
-                    <td className="py-3 px-4 text-right text-white font-bold">
-                      ${Number(pair.price || 0) < 0.01 ? Number(pair.price || 0).toFixed(6) : Number(pair.price || 0).toLocaleString(undefined, { minimumFractionDigits: pair.precision ?? 2 })}
-                    </td>
-                    <td className="py-3 px-4 text-right">
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                        isPositive ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
-                      }`}>
-                        {isPositive ? '+' : ''}{Number(pair.change24h || 0)}%
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-right text-emerald-400 font-semibold">
-                      ${pair.volume24h}
-                    </td>
-                    <td className="py-3 px-4 text-center font-sans">
-                      <div className="flex flex-col items-center gap-1 w-28 mx-auto">
-                        <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${
-                              pair.rangePosition > 75 ? 'bg-emerald-400' : pair.rangePosition > 40 ? 'bg-cyan-400' : 'bg-slate-500'
-                            }`}
-                            style={{ width: `${Math.min(Math.max(Number(pair.rangePosition || 50), 5), 100)}%` }}
-                          />
-                        </div>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {pair.rangePosition}% of range
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-right text-slate-400 text-[11px]">
-                      <div>H: {pair.high24h?.toLocaleString()}</div>
-                      <div>L: {pair.low24h?.toLocaleString()}</div>
-                    </td>
-                    <td className="py-3 px-4 text-center font-sans">
-                      <button
-                        onClick={() => onSelectPair(pair.symbol)}
-                        className="px-3 py-1.5 text-xs font-semibold bg-emerald-600/15 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/25 rounded-lg transition-colors flex items-center gap-1.5 mx-auto"
-                      >
-                        <Zap className="w-3 h-3" />
-                        <span>Trade</span>
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-              {processed.length === 0 && (
-                <tr>
-                  <td colSpan="8" className="py-8 text-center text-slate-400">
-                    {isHalalActive ? 'No halal coins match your filter.' : 'No coins match your filter.'}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        {view === 'table' ? (
+        <DataTable
+          rows={processed}
+          rowKey={(r) => r.symbol}
+          sortBy={sortBy}
+          sortAsc={sortAsc}
+          onSort={handleSort}
+          empty={isHalalActive ? 'No halal coins match your filter.' : 'No coins match your filter.'}
+          columns={[
+            { key: 'pair', header: 'Market Pair', primary: true, mono: false, sortable: 'symbol', render: (r) => (
+              <span className="flex items-center gap-3">
+                <span className={`rounded px-2 py-0.5 font-mono text-xs font-bold ${(r.halalRank ?? r.momentumRank) <= 3 ? 'bg-live/15 text-live' : (r.halalRank ?? r.momentumRank) <= 10 ? 'bg-paper/10 text-paper' : 'bg-raised text-muted'}`}>#{r.halalRank ?? r.momentumRank}</span>
+                <span><b className="text-ink">{r.symbol}</b><span className="block text-xs text-muted">{r.base} / USDT</span></span>
+              </span>
+            ) },
+            { key: 'price', header: 'Price', align: 'right', sortable: 'price', render: (r) => { const v = Number(r.price || 0); return <b className="text-ink">${v < 0.01 ? v.toFixed(6) : v.toLocaleString(undefined, { minimumFractionDigits: 2 })}</b>; } },
+            { key: 'change24h', header: '24h change', align: 'right', sortable: 'change24h', render: (r) => { const up = Number(r.change24h || 0) >= 0; return <span className={`rounded px-2 py-0.5 text-xs font-bold ${up ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>{up ? '▲ +' : '▼ '}{Number(r.change24h || 0)}%</span>; } },
+            { key: 'spark', header: 'Last 24h', align: 'center', mono: false, render: (r) => <Sparkline closes={spark[r.symbol]} /> },
+    { key: 'volume24h', header: '24h turnover', align: 'right', sortable: 'quoteVolume', render: (r) => <span className="text-up">${r.volume24h}</span> },
+            { key: 'range', header: '24h range', align: 'center', sortable: 'rangePosition', mono: false, render: (r) => (
+              <span className="mx-auto flex w-28 flex-col items-center gap-1">
+                <span className="h-1.5 w-full overflow-hidden rounded-full bg-raised"><span className={`block h-full rounded-full ${r.rangePosition > 75 ? 'bg-up' : r.rangePosition > 40 ? 'bg-paper' : 'bg-muted'}`} style={{ width: `${Math.min(Math.max(Number(r.rangePosition || 50), 5), 100)}%` }} /></span>
+                <span className="font-mono text-xs text-muted">{r.rangePosition}% of range</span>
+              </span>
+            ) },
+            { key: 'hl', header: '24h high / low', align: 'right', render: (r) => <span className="text-xs text-muted">H {r.high24h?.toLocaleString()}<br />L {r.low24h?.toLocaleString()}</span> },
+            { key: 'action', header: 'Action', align: 'center', actions: true, mono: false, render: (r) => (
+              <button onClick={() => onSelectPair(r.symbol)} className="inline-flex w-full items-center justify-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-canvas md:w-auto">
+                <Zap className="size-3" /> Trade
+              </button>
+            ) },
+          ]}
+        />
+        ) : (
+          <div className="p-3">
+            {byVolume.length === 0 ? (
+              <p className="py-10 text-center text-sm text-muted">No coins match your filter.</p>
+            ) : (
+              <div ref={mapRef} className="relative w-full overflow-hidden rounded-xl" style={{ height: mapH || 400 }}>
+                {tiles.map(({ item: r, x, y, w, h }) => {
+                  const chg = Number(r.change24h || 0);
+                  const up = chg >= 0;
+                  const mix = Math.min(80, 18 + Math.abs(chg) * 9);
+                  const showName = w > 52 && h > 34;
+                  const showPct = w > 52 && h > 50;
+                  return (
+                    <button
+                      key={r.symbol}
+                      onClick={() => onSelectPair(r.symbol)}
+                      title={`${r.symbol}: ${up ? '+' : ''}${chg}% · 24h turnover $${r.volume24h}. Click to trade.`}
+                      aria-label={`${r.symbol} ${up ? 'up' : 'down'} ${Math.abs(chg)} percent. Open in Terminal`}
+                      className="absolute overflow-hidden border border-canvas p-1.5 text-left transition-[filter] hover:brightness-125"
+                      style={{ left: x, top: y, width: w, height: h, background: `color-mix(in srgb, var(${up ? '--c-up' : '--c-down'}) ${mix}%, var(--c-surface))` }}
+                    >
+                      {showName && <div className="truncate text-xs font-semibold text-ink">{r.base || r.symbol.replace('USDT', '')}</div>}
+                      {showPct && <div className="truncate font-mono text-[11px] text-ink">{up ? '▲ +' : '▼ '}{chg}%</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <p className="mt-3 text-xs text-muted">Tile area is proportional to 24h turnover (with a small minimum so tiny coins stay clickable). Colour is 24h change, with an arrow as well. Hover a small tile for its name. Click to open it in the Terminal.</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import DataTable from '../ui/DataTable.jsx';
 import {
-  DollarSign,
-  TrendingUp,
-  TrendingDown,
   RefreshCw,
   Filter,
-  PieChart,
   Clock,
 } from 'lucide-react';
 
@@ -43,8 +40,6 @@ export default function PnLDashboard() {
   }, []);
 
   const pnlColor = (v) => (v >= 0 ? 'text-emerald-400' : 'text-rose-400');
-  const pnlBg = (v) => (v >= 0 ? 'bg-emerald-500/10' : 'bg-rose-500/10');
-  const pnlBorder = (v) => (v >= 0 ? 'border-emerald-500/20' : 'border-rose-500/20');
 
   const now = Date.now();
   const rangeStart = dateRange === 'all' ? 0 : now - Number(dateRange.replace('d', '')) * 86400000;
@@ -77,31 +72,45 @@ export default function PnLDashboard() {
 
   const symbolRows = Array.from(symbolMap.values());
 
+  // Headline stats for the selected period
+  const closed = filteredTrades.filter((t) => Number(t.realizedPnl || 0) !== 0);
+  const grossWin = closed.filter((t) => t.realizedPnl > 0).reduce((a, t) => a + Number(t.realizedPnl), 0);
+  const grossLoss = Math.abs(closed.filter((t) => t.realizedPnl < 0).reduce((a, t) => a + Number(t.realizedPnl), 0));
+  const winRate = closed.length ? Math.round((closed.filter((t) => t.realizedPnl > 0).length / closed.length) * 100) : null;
+  const profitFactor = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : grossWin > 0 ? '∞' : null;
+  const feesPaid = filteredTrades.reduce((a, t) => a + Number(t.fee || 0), 0);
+  const curve = (() => {
+    let run = 0;
+    return filteredTrades.slice().sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((t) => { run += Number(t.realizedPnl || 0); return run; });
+  })();
+  const maxDrawdown = (() => {
+    let peak = 0; let dd = 0;
+    curve.forEach((v) => { peak = Math.max(peak, v); dd = Math.min(dd, v - peak); });
+    return dd;
+  })();
+  const chartPoints = (() => {
+    if (curve.length < 2) return '';
+    const lo = Math.min(0, ...curve); const hi = Math.max(0, ...curve); const span = hi - lo || 1;
+    return curve.map((v, i) => `${(i / (curve.length - 1)) * 1000},${150 - ((v - lo) / span) * 140 - 5}`).join(' ');
+  })();
+  const fmt = (v) => `${v >= 0 ? '+' : '−'}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      {/* Header with range chips */}
+      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white">P&L Dashboard</h1>
-          <p className="text-sm text-slate-400">Realized vs unrealized profit & loss across all accounts and symbols.</p>
+          <h1 className="text-2xl font-semibold text-ink">P&L</h1>
+          <p className="text-sm text-muted">How you did, across all accounts and symbols.</p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={dateRange}
-            onChange={(e) => setDateRange(e.target.value)}
-            className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-emerald-500"
-          >
-            <option value="1d">1 Day</option>
-            <option value="7d">7 Days</option>
-            <option value="30d">30 Days</option>
-            <option value="all">All Time</option>
-          </select>
-          <button
-            onClick={fetchData}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 border border-slate-700 rounded-lg hover:text-white hover:border-slate-600 transition-colors"
-          >
-            <RefreshCw className="w-3 h-3" />
-            Refresh
+          <div role="group" aria-label="Period" className="flex gap-1 rounded-xl border border-line bg-surface p-1">
+            {[['1d', '1D'], ['7d', '7D'], ['30d', '30D'], ['all', 'All']].map(([v, l]) => (
+              <button key={v} onClick={() => setDateRange(v)} aria-pressed={dateRange === v} className={`rounded-lg px-3 py-1 font-mono text-xs ${dateRange === v ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}`}>{l}</button>
+            ))}
+          </div>
+          <button onClick={fetchData} className="flex items-center gap-1.5 rounded-xl border border-line bg-raised px-3 py-1.5 text-xs font-semibold text-ink">
+            <RefreshCw className="size-3" /> Refresh
           </button>
         </div>
       </div>
@@ -114,52 +123,37 @@ export default function PnLDashboard() {
 
       {!loading && (
         <>
-          {/* KPI Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-slate-500">Total Portfolio Value</p>
-                  <p className="text-xl font-bold text-white">${totalHoldingsValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
-                </div>
-                <PieChart className="w-6 h-6 text-slate-500" />
-              </div>
+          {/* Answer first: one headline number, the curve, then key stats */}
+          <section className="rounded-xl border border-line bg-surface p-5">
+            <p className="text-xs text-muted">{dateRange === 'all' ? 'All time' : `Last ${dateRange.replace('d', '')} day${dateRange === '1d' ? '' : 's'}`}</p>
+            <p className={`mt-1 font-mono text-4xl font-semibold ${totalPnl >= 0 ? 'text-up' : 'text-down'}`}>
+              {totalPnl >= 0 ? '▲ ' : '▼ '}{fmt(totalPnl)}
+            </p>
+            <p className="mt-1 text-xs text-muted">Realized {fmt(realizedPnl)} · Unrealized {fmt(unrealizedPnl)}</p>
+            <div className="mt-4" role="img" aria-label="Cumulative realized P&L for the period">
+              {chartPoints ? (
+                <svg viewBox="0 0 1000 150" preserveAspectRatio="none" className="h-40 w-full">
+                  <line x1="0" x2="1000" y1="145" y2="145" stroke="currentColor" className="text-line" />
+                  <polyline points={chartPoints} fill="none" strokeWidth="2" vectorEffect="non-scaling-stroke" className={totalPnl >= 0 ? 'stroke-up' : 'stroke-down'} />
+                </svg>
+              ) : (
+                <div className="grid h-24 place-items-center text-sm text-muted">Not enough closed trades in this period to draw a curve.</div>
+              )}
             </div>
-            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-slate-500">Realized P&L ({dateRange})</p>
-                  <p className={`text-xl font-bold ${pnlColor(realizedPnl)}`}>
-                    {realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(2)}
-                  </p>
-                </div>
-                <DollarSign className="w-6 h-6 text-emerald-400" />
+          </section>
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+            {[
+              ['Portfolio value', `$${totalHoldingsValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'text-ink'],
+              ['Win rate', winRate === null ? '—' : `${winRate}%`, 'text-ink'],
+              ['Profit factor', profitFactor ?? '—', 'text-ink'],
+              ['Max drawdown', fmt(maxDrawdown), maxDrawdown < 0 ? 'text-down' : 'text-ink'],
+              ['Fees paid', `$${feesPaid.toFixed(2)}`, 'text-ink'],
+            ].map(([label, value, tone]) => (
+              <div key={label} className="rounded-xl border border-line bg-surface p-4">
+                <p className="text-xs text-muted">{label}</p>
+                <p className={`mt-1 font-mono text-lg font-semibold ${tone}`}>{value}</p>
               </div>
-            </div>
-            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-slate-500">Unrealized P&L</p>
-                  <p className={`text-xl font-bold ${pnlColor(unrealizedPnl)}`}>
-                    {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(2)}
-                  </p>
-                </div>
-                <TrendingUp className="w-6 h-6 text-emerald-400" />
-              </div>
-            </div>
-            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-slate-500">Total P&L</p>
-                  <p className={`text-2xl font-bold ${pnlColor(totalPnl)}`}>
-                    {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
-                  </p>
-                </div>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${pnlBg(totalPnl)} ${pnlBorder(totalPnl)}`}>
-                  {totalPnl >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                </div>
-              </div>
-            </div>
+            ))}
           </div>
 
           {/* Per-Symbol Breakdown */}
@@ -170,55 +164,18 @@ export default function PnLDashboard() {
                 Per-Symbol Breakdown ({symbolRows.length} symbols)
               </span>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-                  <tr>
-                    <th className="py-3 px-4">Symbol</th>
-                    <th className="py-3 px-4 text-right">Realized P&L</th>
-                    <th className="py-3 px-4 text-right">Unrealized P&L</th>
-                    <th className="py-3 px-4 text-right">Total P&L</th>
-                    <th className="py-3 px-4 text-right">Size</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {symbolRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-8 text-center text-slate-400">
-                        No position or trade data for the selected period.
-                      </td>
-                    </tr>
-                  ) : (
-                    symbolRows.map((s) => {
-                      const total = s.realized + s.unrealized;
-                      return (
-                        <tr key={s.symbol} className="hover:bg-slate-800/30 transition-colors">
-                          <td className="py-3 px-4 font-sans font-bold text-white">{s.symbol}</td>
-                          <td className="py-3 px-4 text-right font-mono tabular-nums">
-                            <span className={`${pnlColor(s.realized)}`}>
-                              {s.realized >= 0 ? '+' : ''}${s.realized.toFixed(2)}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono tabular-nums">
-                            <span className={`${pnlColor(s.unrealized)}`}>
-                              {s.unrealized >= 0 ? '+' : ''}${s.unrealized.toFixed(2)}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right font-bold font-mono tabular-nums">
-                            <span className={`${pnlColor(total)}`}>
-                              {total >= 0 ? '+' : ''}${total.toFixed(2)}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-400">
-                            {s.size.toFixed(6)}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={symbolRows}
+              rowKey={(s) => s.symbol}
+              empty="No position or trade data for the selected period."
+              columns={[
+                { key: 'symbol', header: 'Symbol', primary: true, mono: false, render: (s) => <b className="text-ink">{s.symbol}</b> },
+                { key: 'realized', header: 'Realized P&L', align: 'right', render: (s) => <span className={pnlColor(s.realized)}>{s.realized >= 0 ? '+' : ''}${s.realized.toFixed(2)}</span> },
+                { key: 'unrealized', header: 'Unrealized P&L', align: 'right', render: (s) => <span className={pnlColor(s.unrealized)}>{s.unrealized >= 0 ? '+' : ''}${s.unrealized.toFixed(2)}</span> },
+                { key: 'total', header: 'Total P&L', align: 'right', render: (s) => { const t = s.realized + s.unrealized; return <b className={pnlColor(t)}>{t >= 0 ? '+' : ''}${t.toFixed(2)}</b>; } },
+                { key: 'size', header: 'Size', align: 'right', render: (s) => <span className="text-muted">{s.size.toFixed(6)}</span> },
+              ]}
+            />
           </div>
 
           {/* Recent Trades */}
@@ -229,53 +186,19 @@ export default function PnLDashboard() {
                 Recent Trades ({filteredTrades.length})
               </span>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-                  <tr>
-                    <th className="py-3 px-4">Timestamp</th>
-                    <th className="py-3 px-4">Symbol</th>
-                    <th className="py-3 px-4">Side</th>
-                    <th className="py-3 px-4 text-right">Price</th>
-                    <th className="py-3 px-4 text-right">Size</th>
-                    <th className="py-3 px-4 text-right">Realized P&L</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-                  {filteredTrades.slice().reverse().slice(0, 20).map((t) => (
-                    <tr key={t.id || t.orderId} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-2.5 px-4 text-slate-400 text-[11px]">
-                        {t.timestamp ? new Date(t.timestamp).toLocaleString() : '—'}
-                      </td>
-                      <td className="py-2.5 px-4 font-bold text-slate-200">{t.symbol}</td>
-                      <td className="py-2.5 px-4">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          t.side === 'BUY' ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
-                        }`}>
-                          {t.side}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-right">
-                        ${Number(t.price || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-2.5 px-4 text-right">{Number(t.size || 0).toFixed(6)}</td>
-                      <td className="py-2.5 px-4 text-right">
-                        <span className={`${pnlColor(Number(t.realizedPnl || 0))} font-bold`}>
-                          {Number(t.realizedPnl || 0) >= 0 ? '+' : ''}${Number(t.realizedPnl || 0).toFixed(2)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredTrades.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400">
-                        No trades in the selected period.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={filteredTrades.slice().reverse().slice(0, 20)}
+              rowKey={(t) => t.id || t.orderId}
+              empty="No trades in the selected period."
+              columns={[
+                { key: 'symbol', header: 'Symbol', primary: true, render: (t) => <b className="text-ink">{t.symbol}</b> },
+                { key: 'timestamp', header: 'Time', render: (t) => <span className="text-xs text-muted">{t.timestamp ? new Date(t.timestamp).toLocaleString() : '—'}</span> },
+                { key: 'side', header: 'Side', mono: false, render: (t) => <span className={`rounded px-1.5 py-0.5 text-xs font-bold ${t.side === 'BUY' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>{t.side === 'BUY' ? '▲' : '▼'} {t.side}</span> },
+                { key: 'price', header: 'Price', align: 'right', render: (t) => `$${Number(t.price || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+                { key: 'size', header: 'Size', align: 'right', render: (t) => Number(t.size || 0).toFixed(6) },
+                { key: 'realizedPnl', header: 'Realized P&L', align: 'right', render: (t) => { const v = Number(t.realizedPnl || 0); return <b className={pnlColor(v)}>{v >= 0 ? '+' : ''}${v.toFixed(2)}</b>; } },
+              ]}
+            />
           </div>
         </>
       )}
