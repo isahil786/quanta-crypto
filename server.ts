@@ -2161,7 +2161,7 @@ async function startServer() {
   // Refresh balances every 60 seconds for REAL-mode accounts (concurrent, with TTL cache).
   setInterval(async () => {
     await Promise.all(accounts.filter((a) => a.mode === 'REAL' && ADAPTER_CLASSES[a.broker]).map((a) => syncAccountBalances(a)));
-  }, 60_000).unref();
+  }, 10_000).unref();
 
   // Connect real-time order/fill WebSocket streams for REAL-mode accounts.
   for (const a of accounts) {
