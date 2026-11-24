@@ -59,7 +59,75 @@
   --c-live: #ffd23d; --c-paper: #7fe0ff;
 }
 /* Compact density: tighter table rows and panel padding */
-[data-density="compact"] table td, [data-density="compact"] table th { padding-block: 0.25rem; }
+[data-density="compact"] table td,
+[data-density="compact"] table th {
+  padding-block: 0.25rem;
+}
+
+/* Buttons: tighter padding and smaller text in compact mode */
+[data-density="compact"] button,
+[data-density="compact"] [role="button"],
+[data-density="compact"] .px-3,
+[data-density="compact"] .px-4,
+[data-density="compact"] .py-1,
+[data-density="compact"] .py-1\.5,
+[data-density="compact"] .py-2,
+[data-density="compact"] .py-2\.5,
+[data-density="compact"] .py-3,
+[data-density="compact"] .py-4,
+[data-density="compact"] .py-5,
+[data-density="compact"] .px-2\.5,
+[data-density="compact"] .px-5 {
+  padding-block: 0.35rem !important;
+  padding-inline: 0.6rem !important;
+  font-size: 0.8rem !important;
+}
+
+/* Inputs and selects: tighter in compact */
+[data-density="compact"] input,
+[data-density="compact"] select,
+[data-density="compact"] textarea {
+  padding-block: 0.3rem !important;
+  padding-inline: 0.6rem !important;
+  font-size: 0.85rem !important;
+}
+
+/* Panels and cards: tighter gaps and padding */
+[data-density="compact"] .gap-4,
+[data-density="compact"] .gap-5,
+[data-density="compact"] .gap-6 {
+  gap: 0.75rem !important;
+}
+[data-density="compact"] .p-4,
+[data-density="compact"] .p-5,
+[data-density="compact"] .px-4,
+[data-density="compact"] .py-4 {
+  padding: 0.8rem !important;
+}
+
+/* Text sizes smaller in compact */
+[data-density="compact"] .text-sm,
+[data-density="compact"] .text-base {
+  font-size: 0.85rem !important;
+}
+[data-density="compact"] .text-xs {
+  font-size: 0.75rem !important;
+}
+[data-density="compact"] .text-lg {
+  font-size: 0.95rem !important;
+}
+[data-density="compact"] .text-xl {
+  font-size: 1.05rem !important;
+}
+
+/* DataTable rows tighter */
+[data-density="compact"] .px-4.py-3,
+[data-density="compact"] .py-3 {
+  padding-block: 0.45rem !important;
+}
+[data-density="compact"] .divide-y > * + * {
+  margin-top: 0.1rem !important;
+}
 
 /* Tailwind v4 has no built-in scrollbar-none; used by horizontally scrolling tab strips. */
 @utility scrollbar-none {
