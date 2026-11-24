@@ -2095,6 +2095,33 @@ async function startServer() {
     process.exit(1);
   }
 
+  // Auto-configure mirror trading: designate the isMaster account as master,
+  // and add other active CoinSwitch accounts as replicas. Runs on every startup
+  // since state persistence is disabled (no data/state.json).
+  try {
+    const master = accounts.find((a) => a.isMaster && a.mode === 'REAL' && a.broker === 'coinswitch' && a.status === 'ACTIVE');
+    const replicas = accounts.filter(
+      (a) => a.mode === 'REAL' && a.broker === 'coinswitch' && a.status === 'ACTIVE' && a.id !== master?.id
+    );
+    if (master) {
+      mirrorConfig.masterAccountId = master.id;
+      mirrorConfig.replicas = replicas.map((r) => ({
+        accountId: r.id,
+        multiplier: 1.0,
+        active: true,
+        maxSlippagePercent: 0.2,
+        note: `Auto-added replica: ${r.accountName}`,
+      }));
+      console.log(`[mirror] master=${master.accountName}, replicas=${replicas.length}`);
+    } else {
+      mirrorConfig.masterAccountId = null;
+      mirrorConfig.replicas = [];
+      console.log('[mirror] no master account found (set isMaster: true in accounts.json)');
+    }
+  } catch (err) {
+    console.error(`[mirror] auto-config failed: ${err.message}`);
+  }
+
   // Auto-fetch real wallet balances from CoinSwitch for REAL-mode accounts.
   async function syncAccountBalances(account) {
     if (account.broker !== 'coinswitch' || account.mode !== 'REAL') return;
