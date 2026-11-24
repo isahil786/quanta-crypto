@@ -175,7 +175,16 @@ export function startPriceFeed() {
       console.warn('[WS] No ticker update for 15s, marking feed stale');
       if (ws) { ws.close(); ws = null; scheduleReconnect(); }
     }
-  }, 5000);
+  }, 5000).unref?.();
+}
+
+/** Stop the Binance WebSocket feed (for clean process exit on restart). */
+export function stopPriceFeed() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (ws) { try { ws.close(); } catch {}; ws = null; }
+  wsIndex.clear();
+  wsSubscriptions.clear();
+  wsLastUpdate = 0;
 }
 
 /** Get live price index from WebSocket (primary) with REST fallback. */

@@ -2238,7 +2238,7 @@ async function startServer() {
   const wss = new WebSocketServer({
     server,
     path: '/ws',
-    maxPayload: 16 * 1024, // subscribe messages are tiny; refuse anything big
+    maxPayload: 16 * 1024,
     // The /api auth middleware does not cover upgrades, so check the token here (?token=...).
     verifyClient: (info, done) => {
       if (!API_TOKEN) return done(true);
@@ -2246,6 +2246,31 @@ async function startServer() {
       return tokenOk(token) ? done(true) : done(false, 401, 'Unauthorized');
     },
   });
+
+  // Graceful shutdown: close WebSockets, price feed, and HTTP server on SIGINT/SIGTERM
+  // so tsx watch can restart the server without port conflicts.
+  function shutdown(sig: string) {
+    console.log(`[shutdown] ${sig} received, closing server…`);
+    try { wss.close(); } catch {}
+    wsClients.forEach((ws) => { try { ws.close(1001, 'Server shutting down'); } catch {} });
+    wsClients.clear();
+    try { stopPriceFeed(); } catch {}
+    // Disconnect all CoinSwitch user-stream sockets.
+    for (const [acctId, adapter] of realAdapters) {
+      try { adapter.disconnectUserStream?.(acctId); } catch {}
+    }
+    server.close(() => {
+      console.log('[shutdown] server closed');
+      process.exit(0);
+    });
+    // Force exit if graceful close hangs.
+    setTimeout(() => {
+      console.warn('[shutdown] forced exit');
+      process.exit(1);
+    }, 3000).unref?.();
+  }
+  for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => shutdown(sig));
+
 
   wss.on('connection', (ws: WebSocket) => {
     if (wsClients.size >= MAX_WS_CLIENTS) { ws.close(1013, 'Server busy'); return; }
