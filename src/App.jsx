@@ -15,6 +15,7 @@ import PnLDashboard from './components/PnLDashboard.jsx';
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [accounts, setAccounts] = useState([]);
+  const [holdings, setHoldings] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState('');
   const [tickers, setTickers] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
@@ -143,14 +144,24 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAccounts(data);
-        // Functional update: the polling interval holds a stale closure, so reading
-        // activeAccountId directly here used to reset the user's selection every 3s.
         if (data.length > 0) {
           setActiveAccountId((cur) => (cur && data.some((a) => a.id === cur) ? cur : data[0].id));
         }
       }
     } catch (err) {
       console.error('Failed to load accounts', err);
+    }
+  };
+
+  const loadHoldings = async () => {
+    try {
+      const res = await fetch('/api/holdings');
+      if (res.ok) {
+        const data = await res.json();
+        setHoldings(Array.isArray(data) ? data : data.holdings || []);
+      }
+    } catch (err) {
+      console.error('Failed to load holdings', err);
     }
   };
 
@@ -175,11 +186,13 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
     loadAccounts();
+    loadHoldings();
     loadTickers();
     const interval = setInterval(() => {
-      if (!isMounted || document.hidden) return; // don't poll from background tabs
+      if (!isMounted || document.hidden) return;
       loadTickers();
       loadAccounts();
+      loadHoldings();
     }, 3000);
     return () => {
       isMounted = false;
@@ -265,6 +278,7 @@ export default function App() {
       {activeTab === 'accounts' && (
         <Accounts
           accounts={accounts}
+          holdings={holdings}
           onAccountsUpdated={loadAccounts}
           activeAccountId={activeAccountId}
           setActiveAccountId={setActiveAccountId}

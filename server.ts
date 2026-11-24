@@ -62,6 +62,7 @@ import {
   getLiveOrderBookDepth,
   getLiveRecentTrades,
   getLiveKlines,
+  getInrUsdtRate,
 } from './server/binance.js';
 import {
   botsState,
@@ -2135,7 +2136,7 @@ async function startServer() {
     // TTL cache: skip exchange call if we have fresh data
     const cached = balanceCache.get(account.id);
     if (cached && Date.now() - cached.ts < BALANCE_TTL_MS) {
-      applyBalanceCache(account, cached.data);
+      await applyBalanceCache(account, cached.data);
       return cached.data;
     }
 
@@ -2143,7 +2144,7 @@ async function startServer() {
       try {
         const info = await adapter.getAccountInfo(account.id);
         balanceCache.set(account.id, { data: info, ts: Date.now() });
-        applyBalanceData(account, info);
+        await applyBalanceData(account, info);
         console.log(`[balance] synced ${account.accountName}`);
       } catch (err) {
         console.warn(`[balance] sync failed for ${account.accountName}:`, (err as Error).message);
@@ -2155,9 +2156,10 @@ async function startServer() {
     return promise;
   }
 
-  function applyBalanceData(account, info) {
+  async function applyBalanceData(account, info) {
     const usdtHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
     let freeUSDT = 0, lockedUSDT = 0;
+    let inrFree = 0, inrLocked = 0;
     for (const b of info.balances) {
       const existing = holdings.find((h) => h.accountId === account.id && h.asset === b.asset);
       const rateUSDT = b.asset === 'USDT' ? 1 : undefined;
@@ -2173,6 +2175,22 @@ async function startServer() {
         });
       }
       if (b.asset === 'USDT') { freeUSDT = b.free; lockedUSDT = b.locked; }
+      if (b.asset === 'INR') { inrFree = b.free; inrLocked = b.locked; }
+    }
+    // Convert CoinSwitch INR wallet balance to USDT-equivalent so equity and
+    // order placement reflect real purchasing power (INR spot wallets hold no USDT by default).
+    if ((inrFree > 0 || inrLocked > 0) && account.broker === 'coinswitch') {
+      const rate = await getInrUsdtRate();
+      if (rate) {
+        const inrTotal = inrFree + inrLocked;
+        freeUSDT += inrFree / rate;
+        lockedUSDT += inrLocked / rate;
+        const inrHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'INR');
+        if (inrHolding) {
+          inrHolding.rateUSDT = Number((1 / rate).toFixed(8));
+          inrHolding.valueUSDT = Number((inrTotal / rate).toFixed(2));
+        }
+      }
     }
     if (usdtHolding) {
       account.availableMarginUSDT = freeUSDT;
@@ -2182,11 +2200,20 @@ async function startServer() {
     }
   }
 
-  function applyBalanceCache(account, info) {
+  async function applyBalanceCache(account, info) {
     const usdtHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
     let freeUSDT = 0, lockedUSDT = 0;
+    let inrFree = 0, inrLocked = 0;
     for (const b of info.balances) {
       if (b.asset === 'USDT') { freeUSDT = b.free; lockedUSDT = b.locked; }
+      if (b.asset === 'INR') { inrFree = b.free; inrLocked = b.locked; }
+    }
+    if ((inrFree > 0 || inrLocked > 0) && account.broker === 'coinswitch') {
+      const rate = await getInrUsdtRate();
+      if (rate) {
+        freeUSDT += inrFree / rate;
+        lockedUSDT += inrLocked / rate;
+      }
     }
     if (usdtHolding) {
       account.availableMarginUSDT = freeUSDT;

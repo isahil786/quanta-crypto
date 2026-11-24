@@ -9,7 +9,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 
-export default function Accounts({ accounts, onAccountsUpdated, activeAccountId, setActiveAccountId }) {
+export default function Accounts({ accounts, holdings, onAccountsUpdated, activeAccountId, setActiveAccountId }) {
   const confirm = useConfirm();
   const [showAddModal, setShowAddModal] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -231,6 +231,21 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
                       ${acc.totalEquityUSDT?.toLocaleString()} USDT
                     </span>
                   </div>
+                  {acc.broker === 'coinswitch' && (
+                    <>
+                      {holdings
+                        .filter((h) => h.accountId === acc.id && h.asset === 'INR')
+                        .map((h) => (
+                          <div key="inr" className="flex justify-between text-slate-400 mt-1">
+                            <span>INR Wallet:</span>
+                            <span className="font-mono text-slate-300">
+                              {h.free?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} INR
+                              {h.valueUSDT ? ` · ≈ $${h.valueUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                    </>
+                  )}
                 </div>
 
                 {/* Capability Tags */}
