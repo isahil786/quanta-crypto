@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import { installConsoleCapture, getLogs, clearLogs } from './server/logs.js';
 import { loadSeedAccounts, mergeSeedCredentials, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
 import {
   BROKERS,
@@ -78,6 +79,7 @@ import {
 } from './server/backtest.js';
 
 dotenv.config();
+installConsoleCapture();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1309,6 +1311,18 @@ app.get('/api/mirror/logs/export', (_req, res) => {
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="mirror-audit-log.csv"');
   res.send(csv);
+});
+
+// -------------------------------------------------------------
+// Server logs (in-memory, runtime only — nothing is written to disk)
+// -------------------------------------------------------------
+app.get('/api/logs', (_req, res) => {
+  res.json({ logs: getLogs() });
+});
+
+app.delete('/api/logs', (_req, res) => {
+  clearLogs();
+  res.json({ success: true, cleared: true });
 });
 
 // -------------------------------------------------------------

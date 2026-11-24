@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import CommandPalette from '../ui/CommandPalette.jsx';
+import LogPanel from '../components/LogPanel.jsx';
 import {
   Activity, Layers, ArrowLeftRight, ShieldCheck, Cpu, Server,
   TrendingUp, ShieldAlert, Bot, Sparkles, PieChart, Sun, Moon, Contrast, Rows3,
@@ -159,7 +160,10 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
           )}
         </header>
 
-        <main className="mx-auto flex w-full max-w-[1720px] flex-1 flex-col p-4 lg:p-6">{children}</main>
+        <main className="mx-auto flex w-full max-w-[1720px] flex-1 flex-col p-4 lg:p-6">
+          {children}
+          <LogPanel />
+        </main>
 
         {/* Status bar: real connection state */}
         <footer className="hidden h-9 items-center gap-5 border-t border-line bg-surface px-6 font-mono text-xs text-muted md:flex">
