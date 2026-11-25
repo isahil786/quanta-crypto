@@ -37,6 +37,19 @@ const FETCH_TIMEOUT_MS = 10000;
 const WS_RECONNECT_BASE_MS = 1000;
 const DEFAULT_EXCHANGE = 'c2c1';
 
+const QUOTES = ['USDT', 'USDC', 'INR', 'BTC'];
+/** App symbol (BTCUSDT, BTC_USDT) -> CoinSwitch pair (BTC/USDT). CoinSwitch rejects a pair without the slash with "valid symbol" 422. */
+export function toCoinSwitchSymbol(symbol: string): string {
+  const s = String(symbol || '').toUpperCase().replace('_', '/');
+  if (s.includes('/')) return s;
+  const quote = QUOTES.find((q) => s.endsWith(q) && s.length > q.length);
+  return quote ? `${s.slice(0, -quote.length)}/${quote}` : s;
+}
+/** CoinSwitch pair (BTC/USDT) -> app symbol (BTCUSDT), so local orders, fills and positions line up. */
+export function fromCoinSwitchSymbol(symbol: any): string {
+  return String(symbol || '').toUpperCase().replace(/[/_]/g, '');
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -152,7 +165,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
     const clientOrderId = req.clientOrderId || makeClientOrderId();
     const body: any = {
       side: req.side.toLowerCase(),
-      symbol: req.symbol.toUpperCase().replace('_', '/'),
+      symbol: toCoinSwitchSymbol(req.symbol),
       type: req.type === 'LIMIT' ? 'limit' : 'market',
       quantity: toFixed8(req.size),
       exchange: this.exchange,
@@ -174,7 +187,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
     return {
       orderId: String(data.order_id || orderId),
       clientOrderId: data.client_order_id || undefined,
-      symbol: data.symbol || symbol || '',
+      symbol: fromCoinSwitchSymbol(data.symbol || symbol || ''),
       status: mapStatus(data.status),
       raw: data,
     };
@@ -190,7 +203,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
   async getOpenOrders(accountId: string, symbol?: string): Promise<OrderQueryResult[]> {
     if (accountId !== this.account.id) throw new Error('Account mismatch');
     const query: Record<string, string | number | boolean> = { open: true };
-    if (symbol) query.symbols = symbol.toUpperCase().replace('_', '/');
+    if (symbol) query.symbols = toCoinSwitchSymbol(symbol);
     const raw: any = await fetchSigned(this.apiKey, this.apiSecret, 'GET', '/trade/api/v2/orders', query);
     const data = raw.data || raw;
     const arr = Array.isArray(data.orders) ? data.orders : (Array.isArray(data) ? data : []);
@@ -214,7 +227,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
     return {
       orderId: String(raw.order_id || raw.id),
       clientOrderId: clientOrderId || raw.client_order_id || undefined,
-      symbol: raw.symbol,
+      symbol: fromCoinSwitchSymbol(raw.symbol),
       side: raw.side,
       type: raw.type === 'limit' ? 'LIMIT' : raw.type === 'market' ? 'MARKET' : 'LIMIT',
       size: Number(raw.orig_qty || raw.quantity || 0),
@@ -292,7 +305,7 @@ class CoinSwitchAdapter implements ExecutionAdapter {
       accountId,
       orderId: String(msg.i || msg.orderId || msg.id),
       clientOrderId: msg.clientOrderId || msg.client_order_id || undefined,
-      symbol: msg.s || msg.symbol,
+      symbol: fromCoinSwitchSymbol(msg.s || msg.symbol),
       side: msg.S || msg.side,
       status: mapStatus(msg.X || msg.status || 'NEW'),
       filledSize: Number(msg.z || msg.filledSize || msg.filledQuantity || 0),

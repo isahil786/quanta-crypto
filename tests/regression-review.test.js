@@ -67,3 +67,13 @@ test('live fill books a trade, uses the reported USDT fee, and a later cancel ev
   applyRealFill(acc, { orderId: 'EX-RF1', clientOrderId: 'rf-1', symbol: 'ETHUSDT', status: 'CANCELED', filledSize: 0.4 });
   assert.equal(ord.status, 'CANCELLED');
 });
+
+import { toCoinSwitchSymbol, fromCoinSwitchSymbol } from '../server/execution/coinswitch.ts';
+test('CoinSwitch symbols are sent as BASE/QUOTE and read back as BASEQUOTE', () => {
+  assert.equal(toCoinSwitchSymbol('BTCUSDT'), 'BTC/USDT');
+  assert.equal(toCoinSwitchSymbol('SHIB_USDT'), 'SHIB/USDT');
+  assert.equal(toCoinSwitchSymbol('ETH/USDT'), 'ETH/USDT');
+  assert.equal(toCoinSwitchSymbol('USDTUSDT'), 'USDT/USDT');
+  assert.equal(toCoinSwitchSymbol('DOGEINR'), 'DOGE/INR');
+  assert.equal(fromCoinSwitchSymbol('BTC/USDT'), 'BTCUSDT');
+});

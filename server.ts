@@ -848,6 +848,14 @@ app.post('/api/orders', async (req, res) => {
       if (!adapter) {
         return res.status(400).json({ error: 'Real trading not configured for this account (missing Binance credentials or adapter).' });
       }
+      // Make sure the balance we check is the exchange's current one (a never-synced REAL account shows 0.00)
+      if (side === 'BUY') {
+        try {
+          await syncAccountBalances(account);
+        } catch (err) {
+          return res.status(502).json({ error: `Could not read your ${account.broker} balance, so the order was not sent: ${(err as Error).message}` });
+        }
+      }
       // Pre-trade margin guard: reject if available margin cannot cover notional + fee
       const livePair = orderType === 'LIMIT' ? undefined : (await getLivePriceIndex()).get(symbol);
       const refPrice = orderType === 'LIMIT' ? num(req.body.price) : livePair?.price;
@@ -859,7 +867,7 @@ app.post('/api/orders', async (req, res) => {
       const fee = (orderValue * feePct) / 100;
       // Only BUYs spend USDT. A SELL spends the base coin, which the exchange checks itself.
       if (side === 'BUY' && account.availableMarginUSDT < orderValue + fee) {
-        return res.status(400).json({ error: `Insufficient margin: need ${(orderValue + fee).toFixed(2)} USDT, have ${account.availableMarginUSDT.toFixed(2)} USDT.` });
+        return res.status(400).json({ error: `Insufficient margin: need ${(orderValue + fee).toFixed(2)} USDT, ${account.broker} reports ${account.availableMarginUSDT.toFixed(2)} USDT available. Add USDT to the spot wallet, or reduce the size.` });
       }
 
       // Slippage protection: reject MARKET orders if expected slippage exceeds the max allowed.
