@@ -646,7 +646,13 @@ app.get('/api/halal/coins', async (_req, res) => {
 
 app.get('/api/market/depth', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    let symbol: string;
+    try {
+      symbol = validateSpotSymbol((req.query.symbol as string | undefined) || 'BTCUSDT');
+    } catch {
+      res.status(400).json({ error: 'Invalid symbol' });
+      return;
+    }
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 15;
     const depthData = await getLiveOrderBookDepth(symbol, limit);
     res.json(depthData);
@@ -657,7 +663,13 @@ app.get('/api/market/depth', async (req, res) => {
 
 app.get('/api/market/trades', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    let symbol: string;
+    try {
+      symbol = validateSpotSymbol((req.query.symbol as string | undefined) || 'BTCUSDT');
+    } catch {
+      res.status(400).json({ error: 'Invalid symbol' });
+      return;
+    }
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
     const tradesData = await getLiveRecentTrades(symbol, limit);
     res.json(tradesData);
@@ -669,7 +681,13 @@ app.get('/api/market/trades', async (req, res) => {
 const klineCache = new Map<string, { at: number; data: any }>();
 app.get('/api/market/klines', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    let symbol: string;
+    try {
+      symbol = validateSpotSymbol((req.query.symbol as string | undefined) || 'BTCUSDT');
+    } catch {
+      res.status(400).json({ error: 'Invalid symbol' });
+      return;
+    }
     const interval = (req.query.interval as string) || '1h';
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 500;
     // 1s micro-cache: several open charts polling the same candles share one upstream request
@@ -1978,6 +1996,15 @@ function stopCandleSocket() {
 
 const WS_SYMBOL_RE = /^[A-Z0-9]{5,12}$/;
 const MAX_WS_SYMBOLS = 50;
+
+/** Validate a Binance spot symbol: uppercase alphanumeric, 5-12 chars. Returns normalized symbol or throws. */
+function validateSpotSymbol(symbol: string | undefined): string {
+  const sym = String(symbol || '').toUpperCase().replace('/', '');
+  if (!WS_SYMBOL_RE.test(sym)) {
+    throw new Error(`Invalid symbol: ${symbol}`);
+  }
+  return sym;
+}
 function ensureBinanceWs(symbol: string) {
   const sym = String(symbol).toUpperCase();
   if (!WS_SYMBOL_RE.test(sym)) return;
