@@ -29,6 +29,7 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState('');
   const [tickers, setTickers] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
+  const [candles, setCandles] = useState({});
   const [, setOrderRefreshCount] = useState(0);
   const [feedOk, setFeedOk] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
@@ -130,6 +131,15 @@ export default function App() {
         } else if (msg.type === 'ticker') {
           applyTickerUpdate(msg.data);
           setFeedOk(true);
+        } else if (msg.type === 'candle') {
+          setCandles((prev) => {
+            const next = { ...prev };
+            if (msg.data && msg.data.symbol) {
+              next[msg.data.symbol] = msg.data;
+            }
+            return next;
+          });
+          setFeedOk(true);
         }
       } catch {
         // ignore malformed messages
@@ -154,10 +164,15 @@ export default function App() {
   // Make sure the server streams the symbol on screen even if it is not among the first 50 tickers
   useEffect(() => {
     const ws = wsUrl.current;
+    const activeAccount = accounts.find((a) => a.id === activeAccountId);
+    const isCsSpot = activeAccount?.broker === 'coinswitch' && activeAccount?.segment === 'SPOT';
     if (wsConnected && ws && ws.readyState === WebSocket.OPEN && selectedSymbol) {
       ws.send(JSON.stringify({ type: 'subscribe', symbol: selectedSymbol }));
+      if (isCsSpot) {
+        ws.send(JSON.stringify({ type: 'subscribe_candle', symbol: selectedSymbol }));
+      }
     }
-  }, [selectedSymbol, wsConnected]);
+  }, [selectedSymbol, wsConnected, accounts, activeAccountId]);
 
   // Maintain WebSocket connection with retry
   useEffect(() => {
@@ -271,6 +286,7 @@ export default function App() {
           activeAccountId={activeAccountId}
           tickers={tickers}
           selectedSymbol={selectedSymbol}
+          candles={candles}
           setSelectedSymbol={setSelectedSymbol}
           onOrderPlaced={handleOrderPlaced}
         />

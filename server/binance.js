@@ -4,6 +4,8 @@ import {
   getLiveRecentTrades as okxTrades,
   getLiveKlines as okxKlines,
 } from './okx.js';
+import { accounts } from './state.js';
+import { signCoinSwitchAuth } from './execution/coinswitch.js';
 
 // Live Binance Market Data Engine
 // Pulls live 24hr tickers, live orderbook depth, and live trades for Top 100 Momentum Coins
@@ -585,8 +587,20 @@ export async function getInrUsdtRate() {
     return inrUsdtRateCache.rate;
   }
   try {
-    const res = await fetch('https://coinswitch.co/trade/api/v2/24hr/all-pairs/ticker?exchange=coinswitchx', {
+    // Find a CoinSwitch REAL account to authenticate the public ticker request
+    const csAccount = accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL' && a.apiKey && a.apiSecret);
+    let headers = {};
+    let signedPath = '/trade/api/v2/24hr/all-pairs/ticker';
+    let querySuffix = '?exchange=coinswitchx';
+    if (csAccount) {
+      const { headers: authHeaders, path } = signCoinSwitchAuth(csAccount.apiKey, csAccount.apiSecret, 'GET', '/trade/api/v2/24hr/all-pairs/ticker', { exchange: 'coinswitchx' });
+      headers = authHeaders;
+      signedPath = path;
+      querySuffix = '';
+    }
+    const res = await fetch(`https://coinswitch.co${signedPath}${querySuffix}`, {
       signal: AbortSignal.timeout(5000),
+      headers,
     });
     if (!res.ok) throw new Error(`CoinSwitch tickers HTTP ${res.status}`);
     const data = await res.json();

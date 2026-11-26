@@ -22,12 +22,14 @@ export default function Dashboard({
   activeAccountId,
   tickers,
   selectedSymbol,
+  candles,
   setSelectedSymbol,
   onOrderPlaced,
 }) {
   const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
   const broker = activeAccount?.broker || 'coinswitch';
-  const isCoinSwitchSpot = broker === 'coinswitch' && activeAccount?.segment === 'SPOT';
+  const segment = activeAccount?.segment;
+  const isCoinSwitchSpot = broker === 'coinswitch' && segment === 'SPOT';
   const toast = useToast();
   const isLive = activeAccount?.mode === 'REAL';
   const [pendingOrder, setPendingOrder] = useState(null);
@@ -281,7 +283,7 @@ export default function Dashboard({
       {/* 3. Terminal Grid: Orderbook Depth + Fast Order Ticket */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Chart (left), ticket (right, full height), book under the chart */}
-        <PriceChart symbol={currentPair.symbol} livePrice={currentPair.price} className="lg:col-span-8" height={400} />
+        <PriceChart symbol={currentPair.symbol} livePrice={currentPair.price} broker={broker} segment={segment} candleData={candles[wantedSymbol]} className="lg:col-span-8" height={400} />
         {/* Left Column: Live Order Book & Real-Time Trades (7 Cols) */}
         <div className="lg:col-span-8 lg:col-start-1 bg-slate-900/80 border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
           <div>

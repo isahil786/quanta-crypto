@@ -18,7 +18,7 @@ import {
 } from './server/brokers/index.js';
 import type { ExecutionAdapter, OrderSide, OrderType } from './server/execution/types.js';
 import { BinanceAdapter } from './server/execution/binance.js';
-import { CoinSwitchAdapter } from './server/execution/coinswitch.js';
+import { CoinSwitchAdapter, toCoinSwitchSymbol } from './server/execution/coinswitch.js';
 import { DeltaAdapter } from './server/execution/delta.js';
 import { CoindcxAdapter } from './server/execution/coindcx.js';
 import {
@@ -489,6 +489,12 @@ app.patch('/api/accounts/:id/mode', async (req, res) => {
     try {
       if (mode === 'REAL' && !adapter.isConnected(account.id)) await adapter.connectUserStream(account.id);
       if (mode === 'PAPER' && prevMode === 'REAL') await adapter.disconnectUserStream(account.id);
+      if (mode === 'REAL' && account.broker === 'coinswitch' && !adapter.isBalanceStreamConnected?.(account.id)) {
+        await adapter.connectBalanceStream!(account.id);
+      }
+      if (mode === 'PAPER' && prevMode === 'REAL' && account.broker === 'coinswitch') {
+        adapter.disconnectBalanceStream?.(account.id);
+      }
     } catch (err) {
       console.warn(`[stream] mode switch stream change failed for ${account.accountName}:`, (err as Error).message);
     }
@@ -591,7 +597,11 @@ app.delete('/api/accounts/:id', (req, res) => {
   mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
   // Drop the exchange adapter so its user-data stream stops applying fills to a removed account
   const adapter = realAdapters.get(removed.id);
-  if (adapter) { void adapter.disconnectUserStream(removed.id).catch(() => {}); realAdapters.delete(removed.id); }
+  if (adapter) {
+    void adapter.disconnectUserStream(removed.id).catch(() => {});
+    if (removed.broker === 'coinswitch') adapter.disconnectBalanceStream?.(removed.id);
+    realAdapters.delete(removed.id);
+  }
   balanceCache.delete(removed.id);
   res.json({ success: true, removedId: removed.id });
 });
@@ -1882,6 +1892,9 @@ const binanceWsBySymbol = new Map<string, WebSocket>();
 const wsClients = new Set<WebSocket>();
 const MAX_WS_CLIENTS = Number(process.env.MAX_WS_CLIENTS) || 100;
 const symbolBotCounts = new Map<string, number>();
+const candleSubscribedSymbols = new Set<string>();
+let candleAdapter: ExecutionAdapter | null = null;
+let candleOnCandleUnsubscribe: (() => void) | null = null;
 
 /** Count a bot against its symbol's websocket subscription (once per bot). */
 function trackBotSymbol(bot) {
@@ -1911,6 +1924,55 @@ function broadcast(message: any) {
     if (client.readyState === WebSocket.OPEN) {
       try { client.send(payload); } catch { /* ignore send errors */ }
     }
+  }
+}
+
+/** Get a CoinSwitch adapter instance for managing the shared public market-data socket. */
+function getCoinSwitchMarketAdapter(): ExecutionAdapter | null {
+  const acct = accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL');
+  if (!acct) return null;
+  const adapter = getSharedAdapter(acct);
+  if ((adapter as any).broker !== 'coinswitch') return null;
+  return adapter;
+}
+
+/** Ensure the CoinSwitch market-data socket is connected and subscribed to all candle pairs. */
+async function ensureCandleSocket(pairs: string[]) {
+  if (pairs.length === 0) return;
+  try {
+    if (!candleAdapter) {
+      candleAdapter = getCoinSwitchMarketAdapter();
+      if (!candleAdapter) {
+        console.warn('[candle] no CoinSwitch REAL adapter available for market-data socket');
+        return;
+      }
+      if (typeof (candleAdapter as any).connectMarketDataSocket !== 'function') {
+        console.warn('[candle] adapter missing connectMarketDataSocket');
+        return;
+      }
+      if (typeof (candleAdapter as any).onCandle !== 'function') {
+        console.warn('[candle] adapter missing onCandle');
+        return;
+      }
+    }
+    await (candleAdapter as any).connectMarketDataSocket(pairs);
+    console.log(`[stream] connected CoinSwitch market-data socket for ${pairs.length} pair(s)`);
+    if (!candleOnCandleUnsubscribe) {
+      candleOnCandleUnsubscribe = (candleAdapter as any).onCandle((data: any) => {
+        broadcast({ type: 'candle', data, symbol: data.symbol });
+      });
+    }
+  } catch (err) {
+    console.error('[candle] ensureCandleSocket failed:', (err as Error).message);
+  }
+}
+
+/** Stop the CoinSwitch market-data socket when no candle subscriptions remain. */
+function stopCandleSocket() {
+  if (candleOnCandleUnsubscribe) { candleOnCandleUnsubscribe(); candleOnCandleUnsubscribe = null; }
+  if (candleAdapter && typeof (candleAdapter as any).disconnectMarketDataSocket === 'function') {
+    (candleAdapter as any).disconnectMarketDataSocket();
+    candleAdapter = null;
   }
 }
 
@@ -2296,6 +2358,7 @@ async function startServer() {
   setInterval(syncAllReal, 30_000).unref();
 
   // Connect real-time order/fill WebSocket streams for REAL-mode accounts.
+  const marketSymbols = new Set<string>();
   for (const a of accounts) {
     if (a.mode === 'REAL') {
       const adapter = getRealAdapter(a);
@@ -2307,6 +2370,31 @@ async function startServer() {
           console.warn(`[stream] failed to connect user stream for ${a.accountName}:`, (err as Error).message);
         }
       }
+      if (adapter && a.broker === 'coinswitch' && !adapter.isBalanceStreamConnected?.(a.id)) {
+        try {
+          await adapter.connectBalanceStream!(a.id);
+          console.log(`[stream] connected balance stream for ${a.accountName}`);
+        } catch (err) {
+          console.warn(`[stream] failed to connect balance stream for ${a.accountName}:`, (err as Error).message);
+        }
+      }
+      // Collect symbols from bots for CoinSwitch market-data socket.
+      if (a.broker === 'coinswitch') {
+        for (const b of botsState.bots) {
+          if (b.accountId === a.id && b.symbol) marketSymbols.add(b.symbol);
+        }
+      }
+    }
+  }
+
+  // Connect shared CoinSwitch market-data socket (Order Book, Candlestick, Trades) if any symbols exist.
+  const csAdapter = accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL') ? getRealAdapter(accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL')!) : undefined;
+  if (csAdapter && marketSymbols.size > 0 && !csAdapter.isMarketDataConnected?.()) {
+    try {
+      await csAdapter.connectMarketDataSocket!([...marketSymbols]);
+      console.log(`[stream] connected CoinSwitch market-data socket for ${marketSymbols.size} symbols`);
+    } catch (err) {
+      console.warn(`[stream] failed to connect CoinSwitch market-data socket:`, (err as Error).message);
     }
   }
 
@@ -2345,7 +2433,13 @@ async function startServer() {
     // Disconnect all CoinSwitch user-stream sockets.
     for (const [acctId, adapter] of realAdapters) {
       try { adapter.disconnectUserStream?.(acctId); } catch {}
+      if (adapter.broker === 'coinswitch') { try { adapter.disconnectBalanceStream?.(acctId); } catch {} }
     }
+    // Disconnect shared CoinSwitch market-data socket.
+    for (const adapter of realAdapters.values()) {
+      if (adapter.broker === 'coinswitch') { try { adapter.disconnectMarketDataSocket?.(); } catch {}; break; }
+    }
+    stopCandleSocket();
     server.close(() => {
       console.log('[shutdown] server closed');
       process.exit(0);
@@ -2391,6 +2485,27 @@ async function startServer() {
           }));
         } else if (msg.type === 'unsubscribe' && msg.symbol) {
           subscribedSymbols.delete(msg.symbol.toUpperCase());
+        } else if (msg.type === 'subscribe_candle' && typeof msg.symbol === 'string' && WS_SYMBOL_RE.test(msg.symbol.toUpperCase())) {
+          const pair = toCoinSwitchSymbol(msg.symbol.toUpperCase()).replace('/', ',');
+          candleSubscribedSymbols.add(pair);
+          void ensureCandleSocket([...candleSubscribedSymbols]).catch((err) => {
+            console.error('[candle] subscribe failed:', (err as Error).message);
+          });
+          ws.send(JSON.stringify({
+            type: 'candle_subscribed',
+            symbol: msg.symbol.toUpperCase(),
+            pair,
+          }));
+        } else if (msg.type === 'unsubscribe_candle' && typeof msg.symbol === 'string') {
+          const pair = toCoinSwitchSymbol(msg.symbol.toUpperCase()).replace('/', ',');
+          candleSubscribedSymbols.delete(pair);
+          if (candleSubscribedSymbols.size === 0) {
+            stopCandleSocket();
+          }
+          ws.send(JSON.stringify({
+            type: 'candle_unsubscribed',
+            symbol: msg.symbol.toUpperCase(),
+          }));
         }
       } catch {
         // ignore malformed client messages
