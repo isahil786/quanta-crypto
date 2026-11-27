@@ -43,13 +43,21 @@ export default function App() {
     symbolsRef.current = tickers.map((t) => t.symbol);
   }, [tickers]);
 
-  // Build WebSocket URL from current host (same server as HTTP API)
+  // Build WebSocket URL from current host (same server as HTTP API). The API token is sent as a
+  // subprotocol (see getWsProtocols), never in the URL, so it can't end up in proxy/access logs.
   const getWsUrl = useCallback(() => {
     const { protocol, host } = window.location;
     const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsProto}//${host}/ws`;
+  }, []);
+
+  const getWsProtocols = useCallback(() => {
     let token = '';
     try { token = localStorage.getItem('apiToken') || ''; } catch { /* storage unavailable */ }
-    return `${wsProto}//${host}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    if (!token) return undefined;
+    // Subprotocol values must be HTTP token chars, so base64url-encode the (UTF-8) token.
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(token))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return ['quanta.v1', `auth.${b64}`];
   }, []);
 
   // Merge WebSocket ticker updates into the tickers list. Updates (dozens per second across symbols) are buffered
@@ -101,7 +109,7 @@ export default function App() {
       wsUrl.current.close();
     }
     const url = getWsUrl();
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, getWsProtocols());
     wsUrl.current = ws;
     // The server streams at most 50 symbols; REST polling covers the rest
     const currentSymbols = symbolsRef.current.slice(0, 50);
@@ -159,7 +167,7 @@ export default function App() {
       setWsError('WebSocket connection failed');
       setWsConnected(false);
     };
-  }, [getWsUrl, applyTickerUpdate]);
+  }, [getWsUrl, getWsProtocols, applyTickerUpdate]);
 
   // Make sure the server streams the symbol on screen even if it is not among the first 50 tickers
   useEffect(() => {

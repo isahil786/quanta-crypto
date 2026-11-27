@@ -8,13 +8,29 @@ const origLog = console.log;
 const origWarn = console.warn;
 const origError = console.error;
 
+/** Render one console argument safely: Errors keep their stack, circular/BigInt values never throw. */
+function fmt(a) {
+  if (a instanceof Error) return a.stack || `${a.name}: ${a.message}`;
+  if (a && typeof a === 'object') {
+    try { return JSON.stringify(a, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)); } catch { return '[unserializable]'; }
+  }
+  return String(a);
+}
+
+/** Mask credentials before a log line is exposed through /api/logs. */
+export function redact(text) {
+  return String(text)
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1***')
+    .replace(/(["']?(?:api[_-]?key|api[_-]?secret|secret|token|password|signature|authorization|x-auth-[a-z-]+)["']?\s*[:=]\s*)(["']?)[^\s"',}&]+/gi, '$1$2***')
+    .replace(/([?&](?:token|apiKey|signature)=)[^&\s]+/gi, '$1***');
+}
+
 function push(level, ...args) {
   const entry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     ts: new Date().toISOString(),
     level, // 'log' | 'warn' | 'error'
-    message: args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '),
-    raw: args,
+    message: redact(args.map(fmt).join(' ')),
   };
   logs.push(entry);
   if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS);

@@ -108,6 +108,17 @@ app.use(helmet({
     },
   },
 }));
+// DNS-rebinding guard: while the server is bound to loopback, only accept requests addressed to a loopback
+// name. A hostile web page that rebinds its domain to 127.0.0.1 sends its own Host header and is refused.
+// ALLOWED_HOSTS=a.example,b.example adds names; it is not applied on non-loopback binds (API_TOKEN protects those).
+const LOOPBACK_BIND = ['127.0.0.1', 'localhost', '::1'].includes(process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'));
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', ...(process.env.ALLOWED_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)]);
+app.use((req, res, next) => {
+  if (process.env.QUANTA_TEST || !LOOPBACK_BIND) return next();
+  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  if (ALLOWED_HOSTS.has(host)) return next();
+  res.status(403).json({ error: 'Host not allowed' });
+});
 app.use(express.json({ limit: '100kb' }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_PER_MIN) || 600, standardHeaders: true, legacyHeaders: false }));
 
@@ -1388,9 +1399,10 @@ app.get('/api/mirror/logs/export', (_req, res) => {
     l.details || '',
   ]);
   const csv = [headers, ...rows]
-    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
-  res.setHeader('Content-Type', 'text/csv');
+    // Prefix cells that a spreadsheet would run as a formula (= + - @ tab CR) so exported text stays text.
+    .map((r) => r.map((c) => { const t = String(c); return `"${(/^[=+\-@\t\r]/.test(t) ? `'${t}` : t).replace(/"/g, '""')}"`; }).join(','))
+    .join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="mirror-audit-log.csv"');
   res.send(csv);
 });
@@ -2441,12 +2453,18 @@ async function startServer() {
     server,
     path: '/ws',
     maxPayload: 16 * 1024,
-    // The /api auth middleware does not cover upgrades, so check the token here (?token=...).
+    // The /api auth middleware does not cover upgrades. The browser can't set headers on a WebSocket, so the
+    // token rides in the Sec-WebSocket-Protocol header as `auth.<base64url>` (not in the URL, which proxies log).
     verifyClient: (info, done) => {
       if (!API_TOKEN) return done(true);
-      const token = new URL(info.req.url || '', 'http://x').searchParams.get('token') || '';
+      const offered = String(info.req.headers['sec-websocket-protocol'] || '').split(',').map((p) => p.trim());
+      const enc = offered.find((p) => p.startsWith('auth.'));
+      let token = '';
+      try { token = enc ? Buffer.from(enc.slice(5), 'base64url').toString('utf8') : ''; } catch { /* bad encoding */ }
       return tokenOk(token) ? done(true) : done(false, 401, 'Unauthorized');
     },
+    // Echo a non-secret protocol so browsers that offered subprotocols accept the handshake.
+    handleProtocols: (protocols) => (protocols.has('quanta.v1') ? 'quanta.v1' : false),
   });
 
   // Graceful shutdown: close WebSockets, price feed, and HTTP server on SIGINT/SIGTERM
@@ -2483,6 +2501,8 @@ async function startServer() {
   wss.on('connection', (ws: WebSocket) => {
     if (wsClients.size >= MAX_WS_CLIENTS) { ws.close(1013, 'Server busy'); return; }
     wsClients.add(ws);
+    // Symbols THIS client asked for, so one tab unsubscribing doesn't cut the feed for the others.
+    const mySymbols = new Set<string>();
 
     ws.send(JSON.stringify({
       type: 'snapshot',
@@ -2490,10 +2510,18 @@ async function startServer() {
       count: getCachedTop100().length,
     }));
 
+    // Stop streaming a symbol only when no other client still wants it (bots keep their own hold on it).
+    const dropIfUnused = (sym: string) => {
+      for (const c of wsClients) if ((c as any).__syms?.has(sym)) return;
+      subscribedSymbols.delete(sym);
+    };
+    (ws as any).__syms = mySymbols;
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string);
         if (msg.type === 'subscribe' && typeof msg.symbol === 'string' && WS_SYMBOL_RE.test(msg.symbol.toUpperCase())) {
+          mySymbols.add(msg.symbol.toUpperCase());
           subscribedSymbols.add(msg.symbol.toUpperCase());
           ensureBinanceWs(msg.symbol.toUpperCase());
           ws.send(JSON.stringify({
@@ -2503,6 +2531,7 @@ async function startServer() {
         } else if (msg.type === 'subscribe_batch' && Array.isArray(msg.symbols)) {
           for (const sym of msg.symbols.slice(0, MAX_WS_SYMBOLS)) {
             if (typeof sym !== 'string' || !WS_SYMBOL_RE.test(sym.toUpperCase())) continue;
+            mySymbols.add(sym.toUpperCase());
             subscribedSymbols.add(sym.toUpperCase());
             ensureBinanceWs(sym.toUpperCase());
           }
@@ -2510,8 +2539,10 @@ async function startServer() {
             type: 'subscribed_batch',
             count: msg.symbols.length,
           }));
-        } else if (msg.type === 'unsubscribe' && msg.symbol) {
-          subscribedSymbols.delete(msg.symbol.toUpperCase());
+        } else if (msg.type === 'unsubscribe' && typeof msg.symbol === 'string') {
+          const sym = msg.symbol.toUpperCase();
+          mySymbols.delete(sym);
+          dropIfUnused(sym);
         } else if (msg.type === 'subscribe_candle' && typeof msg.symbol === 'string' && WS_SYMBOL_RE.test(msg.symbol.toUpperCase())) {
           const pair = toCoinSwitchSymbol(msg.symbol.toUpperCase()).replace('/', ',');
           candleSubscribedSymbols.add(pair);
@@ -2541,6 +2572,9 @@ async function startServer() {
 
     ws.onclose = () => {
       wsClients.delete(ws);
+      const syms = [...mySymbols];
+      mySymbols.clear();
+      syms.forEach(dropIfUnused);
     };
   });
 }

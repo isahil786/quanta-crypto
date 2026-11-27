@@ -50,3 +50,16 @@ After fixes: 113 tests pass, lint/tsc/build all green.
 11. UI: ~12 independent `setInterval` pollers run even when the tab is hidden; pause on `document.hidden` or move to the WS stream. JS bundle is 647 kB (single chunk): lazy-load Backtesting/AlgoBots/charts.
 12. CSV export of mirror logs is not protected against formula injection (prefix cells starting with `= + - @`).
 13. Dockerfile runs `tsx` in production; fine, but add `engines` to package.json and pin Node 20/22 to match CI.
+
+## Round 3
+| Area | Change |
+|---|---|
+| Logs | `console.log(circularObject)` threw inside the capture hook; Errors logged as `{}` (message lost). Now safe, stacks kept. `/api/logs` redacts keys/secrets/bearer/token and no longer returns raw args. |
+| CSV export | Mirror log CSV neutralises `= + - @` formula cells; CRLF + UTF-8 header. |
+| DNS rebinding | On loopback binds, requests with a non-loopback `Host` get 403 (`ALLOWED_HOSTS` adds names). |
+| WS subscriptions | One tab's `unsubscribe`/disconnect no longer stops the feed for other clients (per-client tracking). |
+| Misc | `engines.node >=20`; misplaced doc comment in positions.js. New `tests/hardening.test.js`. 117 tests, lint, build green. |
+
+Round 3b: WS token moved from `?token=` to the `Sec-WebSocket-Protocol` header (verified: good token connects, bad/missing get 401).
+
+Still needs your decision: mirroring on by default with REAL replicas auto-wired (#1), plaintext API keys (#4).
