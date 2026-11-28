@@ -790,37 +790,84 @@ app.post('/api/backtest/optimize', async (req, res) => {
 // -------------------------------------------------------------
 // 4. Orders & Execution (Executing at Live Market Prices)
 // -------------------------------------------------------------
-app.get('/api/orders', (req, res) => {
-  const { accountId, broker, status, page, limit } = req.query;
-  let filtered = [...orders];
+app.get('/api/orders', async (req, res) => {
+  try {
+    const { accountId, broker, status, page, limit } = req.query;
+    let localOrders = [...orders];
 
-  if (accountId) {
-    filtered = filtered.filter((o) => o.accountId === accountId);
+    // For REAL accounts, also fetch open orders from the exchange
+    const exchangeOrders = [];
+    const realAccounts = accountId
+      ? [accounts.find((a) => a.id === accountId)].filter(Boolean)
+      : accounts.filter((a) => a.mode === 'REAL');
+
+    for (const acc of realAccounts) {
+      if (broker && acc.broker !== broker) continue;
+      const adapter = getRealAdapter(acc);
+      if (!adapter) continue;
+      try {
+        const exOrders = await adapter.getOpenOrders(acc.id);
+        for (const eo of exOrders) {
+          const alreadyTracked = localOrders.some((o) => o.exchangeOrderId === eo.orderId);
+          if (alreadyTracked) continue;
+          exchangeOrders.push({
+            id: `ex-${eo.orderId}`,
+            accountId: acc.id,
+            broker: acc.broker,
+            symbol: eo.symbol,
+            side: eo.side,
+            orderType: eo.type,
+            price: eo.price,
+            size: eo.size,
+            filledSize: eo.filledSize || 0,
+            status: eo.status || 'OPEN',
+            timeInForce: 'GTC',
+            leverage: 1,
+            timestamp: eo.timestamp || new Date().toISOString(),
+            fee: eo.fee || 0,
+            mode: 'REAL',
+            exchangeOrderId: eo.orderId,
+            raw: eo.raw,
+            source: 'exchange',
+          });
+        }
+      } catch (err) {
+        console.warn(`[api/orders] failed to fetch exchange orders for ${acc.accountName}:`, (err as Error).message);
+      }
+    }
+
+    let filtered = [...localOrders, ...exchangeOrders];
+
+    if (accountId) {
+      filtered = filtered.filter((o) => o.accountId === accountId);
+    }
+    if (broker) {
+      filtered = filtered.filter((o) => o.broker === broker);
+    }
+    if (status) {
+      filtered = filtered.filter((o) => o.status === status);
+    }
+
+    filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    const pageNum = Math.max(Number(page || 1), 1);
+    const limitNum = Math.min(Math.max(Number(limit || 50), 1), 500);
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / limitNum) || 1;
+    const start = (pageNum - 1) * limitNum;
+    const paged = filtered.slice(start, start + limitNum);
+
+    res.json({
+      orders: paged,
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages,
+      hasMore: pageNum < totalPages,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  if (broker) {
-    filtered = filtered.filter((o) => o.broker === broker);
-  }
-  if (status) {
-    filtered = filtered.filter((o) => o.status === status);
-  }
-
-  filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-  const pageNum = Math.max(Number(page || 1), 1);
-  const limitNum = Math.min(Math.max(Number(limit || 50), 1), 500);
-  const total = filtered.length;
-  const totalPages = Math.ceil(total / limitNum) || 1;
-  const start = (pageNum - 1) * limitNum;
-  const paged = filtered.slice(start, start + limitNum);
-
-  res.json({
-    orders: paged,
-    page: pageNum,
-    limit: limitNum,
-    total,
-    totalPages,
-    hasMore: pageNum < totalPages,
-  });
 });
 
 app.post('/api/orders', async (req, res) => {
@@ -1257,7 +1304,46 @@ app.get('/api/positions', async (req, res) => {
   try {
     const liveCoins = await getLivePriceIndex();
 
-    // Update unrealized PnL dynamically from real Binance prices
+    // For REAL accounts, also fetch open orders from the exchange as positions
+    const exchangePositions = [];
+    for (const acc of accounts.filter((a) => a.mode === 'REAL')) {
+      const adapter = getRealAdapter(acc);
+      if (!adapter) continue;
+      try {
+        const exOrders = await adapter.getOpenOrders(acc.id);
+        for (const eo of exOrders) {
+          const livePair = liveCoins.get(eo.symbol);
+          const currentPrice = livePair ? livePair.price : Number(eo.price || 0);
+          const entryPrice = Number(eo.price || 0);
+          const size = Number(eo.size || 0);
+          const filledSize = Number(eo.filledSize || 0);
+          const remaining = size - filledSize;
+          if (remaining <= 0) continue;
+          const side = eo.side === 'BUY' ? 'LONG' : 'SHORT';
+          const priceDiff = side === 'LONG' ? currentPrice - entryPrice : entryPrice - currentPrice;
+          const uPnl = Number((priceDiff * remaining).toFixed(2));
+          exchangePositions.push({
+            id: `ex-pos-${eo.orderId}`,
+            accountId: acc.id,
+            broker: acc.broker,
+            symbol: eo.symbol,
+            side,
+            entryPrice,
+            size: remaining,
+            margin: entryPrice * remaining,
+            markPrice: currentPrice,
+            unrealizedPnl: uPnl,
+            pnlPercent: Number(((uPnl / (entryPrice * remaining)) * 100).toFixed(2)),
+            exchangeOrderId: eo.orderId,
+            source: 'exchange',
+          });
+        }
+      } catch (err) {
+        console.warn(`[api/positions] failed to fetch exchange orders for ${acc.accountName}:`, (err as Error).message);
+      }
+    }
+
+    // Update local positions with live prices
     const updated = positions.map((p) => {
       const livePair = liveCoins.get(p.symbol);
       const currentPrice = livePair ? livePair.price : p.markPrice;
@@ -1271,7 +1357,8 @@ app.get('/api/positions', async (req, res) => {
         pnlPercent,
       };
     });
-    res.json(updated);
+
+    res.json([...updated, ...exchangePositions]);
   } catch (err) {
     res.json(positions);
   }
