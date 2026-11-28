@@ -18,8 +18,7 @@ import type {
 } from './types.js';
 import { signDeltaRequest } from '../brokers/delta.js';
 
-const HOST = 'https://api.india.delta.exchange';
-const API_PREFIX = '/v2'; // Delta signs the FULL request path, including /v2
+const BASE_URL = 'https://api.india.delta.exchange/v2';
 const WS_URL = 'wss://socket.india.delta.exchange';
 const FETCH_TIMEOUT_MS = 10000;
 
@@ -57,34 +56,25 @@ export class DeltaAdapter implements ExecutionAdapter {
 
   constructor(private account: ExecutionAccount) {}
 
-  private async request(method: string, pathWithQuery: string, body?: any): Promise<any> {
-    const qIdx = pathWithQuery.indexOf('?');
-    const path = qIdx === -1 ? pathWithQuery : pathWithQuery.slice(0, qIdx);
-    const query = qIdx === -1 ? '' : pathWithQuery.slice(qIdx + 1);
+  private headers(method: string, path: string, body?: any) {
     const bodyStr = body ? JSON.stringify(body) : '';
-    // Signature is over method + timestamp + "/v2/<path>" + "?query" + body (timestamp is only valid for ~5s).
-    const headers = signDeltaRequest(method, `${API_PREFIX}${path}`, query, bodyStr, this.account.apiSecret, this.account.apiKey);
-    (headers as any)['User-Agent'] = 'quanta-crypto/1.0'; // Delta rejects requests without a User-Agent
-    (headers as any)['Accept'] = 'application/json';
+    return signDeltaRequest(method, path, '', bodyStr, this.account.apiSecret, this.account.apiKey);
+  }
+
+  private async request(method: string, path: string, body?: any): Promise<any> {
+    const headers = this.headers(method, path, body);
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch(`${HOST}${API_PREFIX}${pathWithQuery}`, {
+      const res = await fetch(`${BASE_URL}${path}`, {
         method,
         headers,
-        body: bodyStr || undefined,
+        body: body ? JSON.stringify(body) : undefined,
         signal: ctrl.signal,
       });
       const text = await res.text();
-      if (!res.ok) {
-        const hint = /ip_not_whitelisted/i.test(text) ? ' (whitelist this server\'s IP on the API key in Delta)'
-          : /invalid_api_key|signature/i.test(text) ? ' (check the API key/secret; Delta India keys are separate from global Delta keys)' : '';
-        throw new Error(`Delta ${method} ${path}: HTTP ${res.status} ${text.slice(0, 300)}${hint}`);
-      }
-      let parsed: any;
-      try { parsed = JSON.parse(text); } catch { return text; }
-      if (parsed && parsed.success === false) throw new Error(`Delta ${method} ${path}: ${JSON.stringify(parsed.error ?? parsed).slice(0, 300)}`);
-      return parsed;
+      if (!res.ok) throw new Error(`Delta ${method} ${path}: HTTP ${res.status} ${text}`);
+      try { return JSON.parse(text); } catch { return text; }
     } finally {
       clearTimeout(t);
     }
@@ -171,19 +161,15 @@ export class DeltaAdapter implements ExecutionAdapter {
   }
 
   async getAccountInfo(accountId: string): Promise<AccountInfoResult> {
-    // GET /v2/wallet/balances -> { success, result: [ { asset_symbol, balance, available_balance, ... } ] }
-    const data = await this.request('GET', '/wallet/balances');
-    const list: any[] = Array.isArray(data) ? data : (data.result ?? data.data ?? []);
-    const balances: any[] = list.map((b) => {
-      const total = Number(b.balance ?? b.total_balance ?? b.total ?? 0);
-      const free = Number(b.available_balance ?? b.free ?? total);
-      return {
-        asset: String(b.asset_symbol ?? b.symbol ?? b.asset ?? b.currency ?? '').toUpperCase(),
-        free,
-        locked: Math.max(total - free, 0),
-        total,
-      };
-    });
+    // Delta doesn't expose account_id in the path for balances; use the signed request to /accounts/{id}/balances
+    const data = await this.request('GET', `/accounts/${this.account.id}/balances`);
+    const list: any[] = Array.isArray(data) ? data : (data.data ?? data.result ?? []);
+    const balances: any[] = list.map((b) => ({
+      asset: b.symbol ?? b.asset ?? b.currency ?? 'USDT',
+      free: Number(b.available_balance ?? b.free ?? 0),
+      locked: Number(b.locked_balance ?? b.locked ?? 0),
+      total: Number(b.total_balance ?? b.total ?? 0),
+    }));
     return { accountId, balances, raw: data };
   }
 

@@ -97,6 +97,40 @@ export interface ExecutionFillEvent {
   raw: any;
 }
 
+export interface OrderBookUpdate {
+  s: string;           // BASE,QUOTE
+  timestamp: number;   // Unix ms
+  bids: [string, string][]; // [price, quantity], sorted descending
+  asks: [string, string][]; // [price, quantity], sorted ascending
+}
+
+export interface CandleUpdate {
+  o: string;   // open
+  h: string;   // high
+  l: string;   // low
+  c: string;   // close
+  volume: string;
+  end_time: string; // Unix ms
+  symbol: string;   // BASE,QUOTE
+  interval: string; // minutes
+}
+
+export interface TradeUpdate {
+  E: number;  // event time (Unix ms)
+  p: string;  // price
+  q: string;  // quantity (base)
+  s: string;  // symbol BASE,QUOTE
+  t: number;  // trade id
+  e: string;  // exchange
+}
+
+export interface BalanceUpdate {
+  [coin: string]: {
+    free_balance: number;
+    locked_balance: number;
+  };
+}
+
 export interface ExecutionAdapter {
   readonly broker: string;
   readonly supportsMarketOrder: boolean;
@@ -115,6 +149,20 @@ export interface ExecutionAdapter {
   disconnectUserStream(accountId: string): Promise<void>;
   onFill?(listener: (event: ExecutionFillEvent) => void): () => void;
   isConnected(accountId: string): boolean;
+
+  // Public market-data websockets (shared, unauthenticated)
+  connectMarketDataSocket?(symbols: string[]): Promise<void>;
+  disconnectMarketDataSocket?(): void;
+  onOrderBook?(listener: (data: OrderBookUpdate) => void): () => void;
+  onCandle?(listener: (data: CandleUpdate) => void): () => void;
+  onTrade?(listener: (data: TradeUpdate) => void): () => void;
+  isMarketDataConnected?(): boolean;
+
+  // Authenticated balance-update websocket (per account)
+  connectBalanceStream?(accountId: string): Promise<void>;
+  disconnectBalanceStream?(accountId: string): void;
+  onBalanceUpdate?(listener: (data: BalanceUpdate) => void): () => void;
+  isBalanceStreamConnected?(accountId: string): boolean;
 }
 
 export interface BrokerAdapterRegistry {

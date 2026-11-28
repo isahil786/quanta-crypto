@@ -53,7 +53,7 @@ export function lockedBase(account, asset) {
   return sum;
 }
 
-function syncBaseHolding(account, asset) {
+export function syncBaseHolding(account, asset) {
   const h = findHolding(account, asset);
   if (!h) return;
   h.locked = Number(lockedBase(account, asset).toFixed(10));
@@ -81,7 +81,6 @@ export function reserveOrder(account, order, price, feePercent) {
   reserveAmounts(account, order, r.usdt, r.base);
 }
 
-/** Give an order's reserved funds back (cancel, edit, reject or just before it fills). */
 /** Find the local order an exchange event belongs to. Matches by exchange order id or client order id,
  *  and only when the event actually carries that id (so `undefined === undefined` can't match the wrong order). */
 export function findOrderForEvent(orderList, accountId, event) {
@@ -96,6 +95,7 @@ export function findOrderForEvent(orderList, accountId, event) {
   );
 }
 
+/** Give an order's reserved funds back (cancel, edit, reject or just before it fills). */
 export function releaseOrder(account, order) {
   const usdt = order.reservedUSDT || 0;
   const base = order.reservedBase || 0;

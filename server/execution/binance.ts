@@ -59,8 +59,33 @@ function mapStatus(s: string): OrderStatus {
 }
 type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'REJECTED' | 'EXPIRED';
 
-function toFixed8(n: number) {
-  return Number(n.toFixed(8));
+type SymbolFilters = { tickSize: number; stepSize: number; minQty: number; minNotional: number; marketStep: number };
+const filterCache = new Map<string, { at: number; f: SymbolFilters }>();
+const FILTER_TTL_MS = 6 * 60 * 60 * 1000;
+
+function decimalsOf(step: number): number {
+  const s = step.toFixed(10).replace(/0+$/, '');
+  const i = s.indexOf('.');
+  return i < 0 ? 0 : s.length - i - 1;
+}
+/** Round DOWN to a multiple of `step` (exchange lot size), without float artefacts (0.1 + 0.2 style). */
+export function floorToStep(value: number, step: number): number {
+  if (!(step > 0)) return value;
+  const d = decimalsOf(step);
+  const units = Math.floor(Number((value / step).toFixed(8)));
+  return Number((units * step).toFixed(d));
+}
+/** Round to the NEAREST multiple of `tick` (exchange price tick). */
+export function roundToTick(value: number, tick: number): number {
+  if (!(tick > 0)) return value;
+  const d = decimalsOf(tick);
+  return Number((Math.round(Number((value / tick).toFixed(8))) * tick).toFixed(d));
+}
+
+/** Plain decimal string for the exchange. String(1e-7) is "1e-7", which Binance rejects. */
+function decimalString(n: number) {
+  const s = n.toFixed(8);
+  return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
 }
 
 class BinanceAdapter implements ExecutionAdapter {
@@ -96,7 +121,6 @@ class BinanceAdapter implements ExecutionAdapter {
   private async fetchSigned(method: 'GET' | 'POST' | 'DELETE', path: string, params?: Record<string, string | number | boolean>) {
     const body = { ...params, timestamp: Date.now() };
     const query = this.signQuery(body as Record<string, string | number | boolean | undefined>);
-    const url = `${BASE_URLS[0]}${path}?${query}`;
     let lastErr: any;
     for (const base of BASE_URLS) {
       let timeout: any;
@@ -110,29 +134,75 @@ class BinanceAdapter implements ExecutionAdapter {
         });
         clearTimeout(timeout);
         const text = await res.text();
-        if (!res.ok) throw new Error(`Binance ${method} ${path} HTTP ${res.status}: ${text}`);
+        if (!res.ok) {
+          const e: any = new Error(`Binance ${method} ${path} HTTP ${res.status}: ${text}`);
+          // A rejected request (bad params, insufficient balance, rate limit) will be rejected by every host: do not repeat it.
+          // 403/451 (geo-block) and 5xx are host-specific, so those are worth trying on the next host.
+          e.noRetry = res.status >= 400 && res.status < 500 && res.status !== 403 && res.status !== 451;
+          throw e;
+        }
         return text ? JSON.parse(text) : {};
       } catch (err) {
         clearTimeout(timeout);
         lastErr = err;
+        if ((err as any)?.noRetry) throw err;
       }
     }
     throw lastErr;
   }
 
+  /** Symbol trading rules (tick size, lot step, min notional) from the public exchangeInfo endpoint, cached for hours. */
+  private async getFilters(symbol: string): Promise<SymbolFilters | null> {
+    const hit = filterCache.get(symbol);
+    if (hit && Date.now() - hit.at < FILTER_TTL_MS) return hit.f;
+    for (const base of BASE_URLS) {
+      try {
+        const res = await fetch(`${base}/api/v3/exchangeInfo?symbol=${encodeURIComponent(symbol)}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!res.ok) continue;
+        const info: any = await res.json();
+        const filters: any[] = info?.symbols?.[0]?.filters || [];
+        const get = (t: string) => filters.find((x) => x.filterType === t) || {};
+        const lot = get('LOT_SIZE');
+        const mlot = get('MARKET_LOT_SIZE');
+        const notional = get('NOTIONAL').minNotional ?? get('MIN_NOTIONAL').minNotional;
+        const f: SymbolFilters = {
+          tickSize: Number(get('PRICE_FILTER').tickSize || 0),
+          stepSize: Number(lot.stepSize || 0),
+          minQty: Number(lot.minQty || 0),
+          minNotional: Number(notional || 0),
+          marketStep: Number(mlot.stepSize || 0) || Number(lot.stepSize || 0),
+        };
+        filterCache.set(symbol, { at: Date.now(), f });
+        return f;
+      } catch { /* try next host */ }
+    }
+    return null; // rules unknown: send as given and let the exchange validate
+  }
+
   // ---------------------------------------------------------------- order
   async placeOrder(req: PlaceOrderRequest): Promise<PlaceOrderResult> {
     const clientOrderId = req.clientOrderId || makeClientOrderId();
+    // Round to the symbol's tick/step so valid-looking orders are not rejected by PRICE_FILTER / LOT_SIZE
+    let size = req.size;
+    let price = req.price;
+    const f = await this.getFilters(req.symbol.toUpperCase());
+    if (f) {
+      size = floorToStep(size, req.type === 'MARKET' ? f.marketStep : f.stepSize);
+      if (req.type === 'LIMIT' && price) price = roundToTick(Number(price), f.tickSize);
+      if (f.minQty && size < f.minQty) throw new Error(`Order size ${req.size} is below the minimum ${f.minQty} for ${req.symbol} (after rounding to step ${f.stepSize}).`);
+      const refPrice = Number(price || 0);
+      if (refPrice && f.minNotional && size * refPrice < f.minNotional) throw new Error(`Order value ${(size * refPrice).toFixed(4)} is below the minimum notional ${f.minNotional} for ${req.symbol}.`);
+    }
     const params: Record<string, string | number | boolean> = {
       symbol: req.symbol.toUpperCase(),
       side: req.side,
       type: req.type,
-      quantity: String(toFixed8(req.size)),
+      quantity: decimalString(size),
       newClientOrderId: clientOrderId,
     };
     if (req.type === 'LIMIT') {
-      if (!req.price) throw new Error('price is required for LIMIT orders');
-      params.price = String(req.price);
+      if (!price) throw new Error('price is required for LIMIT orders');
+      params.price = decimalString(Number(price));
       params.timeInForce = req.timeInForce || 'GTC';
     }
     const raw = await this.fetchSigned('POST', '/api/v3/order', params);

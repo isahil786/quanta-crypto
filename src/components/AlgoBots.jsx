@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import DataTable from '../ui/DataTable.jsx';
+import { useConfirm } from '../ui/Confirm.jsx';
 import {
   Bot,
   Play,
@@ -16,6 +18,7 @@ import {
   ArrowDownUp,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 // Price formatting that stays readable from BTC (100,123.45) down to sub-cent coins (0.00001234)
 const fmtPrice = (p) => {
   const n = Number(p);
@@ -80,9 +83,13 @@ function RangeFooter({ range, live, buys, sells, accent, tone }) {
 }
 
 export default function AlgoBots({ accounts, tickers }) {
+  const confirm = useConfirm();
+  const [viewMode, setViewMode] = useState('cards'); // 'cards' | 'list'
   const [botsData, setBotsData] = useState({ bots: [], stats: {} });
   const [filterType, setFilterType] = useState('ALL'); // 'ALL', 'TWAP_SLICER', 'BREAKOUT_CHASER', 'GRID_BOT'
   const [showDeployModal, setShowDeployModal] = useState(false);
+  const [wizStep, setWizStep] = useState(1); // 1 Strategy, 2 Pair & size, 3 Risk, 4 Review
+  useEffect(() => { if (showDeployModal) setWizStep(1); }, [showDeployModal]);
   const [selectedBotLogId, setSelectedBotLogId] = useState(null);
   const [selectedBotLadderId, setSelectedBotLadderId] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -154,7 +161,7 @@ export default function AlgoBots({ accounts, tickers }) {
   useEffect(() => {
     let isMounted = true;
     fetchBots();
-    const interval = setInterval(() => {
+    const interval = visibleInterval(() => {
       if (!isMounted) return;
       fetchBots();
     }, 3000);
@@ -176,7 +183,7 @@ export default function AlgoBots({ accounts, tickers }) {
       } catch { /* keep the last good list */ }
     };
     load();
-    const id = setInterval(load, 15000);
+    const id = visibleInterval(load, 15000);
     return () => { alive = false; clearInterval(id); };
   }, []);
 
@@ -243,6 +250,7 @@ export default function AlgoBots({ accounts, tickers }) {
   };
 
   const handleStopBot = async (botId) => {
+    if (!(await confirm({ title: 'Stop this bot?', subtitle: 'Its open child orders are cancelled.', rows: [['Bot', String(botId)]], confirmLabel: 'Stop bot', live: false }))) return;
     try {
       const res = await fetch(`/api/bots/${botId}/stop`, { method: 'POST' });
       const data = await res.json();
@@ -255,6 +263,7 @@ export default function AlgoBots({ accounts, tickers }) {
   };
 
   const handleDeleteBot = async (botId) => {
+    if (!(await confirm({ title: 'Remove this bot?', rows: [['Bot', String(botId)]], confirmLabel: 'Remove bot', live: false }))) return;
     try {
       const res = await fetch(`/api/bots/${botId}`, { method: 'DELETE' });
       if (res.ok) {
@@ -268,6 +277,8 @@ export default function AlgoBots({ accounts, tickers }) {
 
   const handleDeployBot = async (e) => {
     e.preventDefault();
+    const target = accounts.find((a) => a.id === (targetAccountId || accounts[0]?.id));
+    if (target?.mode === 'REAL' && !(await confirm({ title: 'Start live bot?', subtitle: `It will place real orders on ${target.accountName}.`, rows: [['Strategy', botType], ['Pair', symbol], ['Account', target.accountName]], confirmLabel: 'Start bot' }))) return;
     setLoading(true);
     try {
       const payload = {
@@ -499,7 +510,40 @@ export default function AlgoBots({ accounts, tickers }) {
         >
           <RefreshCw className="w-3.5 h-3.5" />
         </button>
+        <div role="group" aria-label="View" className="ml-auto flex gap-1 rounded-xl border border-line bg-surface p-1">
+          {[['cards', 'Cards'], ['list', 'List']].map(([v, l]) => (
+            <button key={v} onClick={() => setViewMode(v)} aria-pressed={viewMode === v} className={`rounded-lg px-3 py-1 text-xs font-semibold ${viewMode === v ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}`}>{l}</button>
+          ))}
+        </div>
       </div>
+
+      {/* Compact list: status and Stop at a glance */}
+      {viewMode === 'list' && filteredBots.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-line bg-surface">
+          <DataTable
+            rows={filteredBots}
+            columns={[
+              { key: 'name', header: 'Bot', primary: true, mono: false, render: (b) => (
+                <span><b className="text-ink">{b.name}</b><span className="ml-2 text-xs text-muted">{b.type.replace('_', ' ')}</span></span>
+              ) },
+              { key: 'symbol', header: 'Pair', mono: false, render: (b) => <span>{b.symbol} <span className="text-xs capitalize text-muted">{b.broker}</span></span> },
+              { key: 'status', header: 'Status', mono: false, render: (b) => <StatusPill bot={b} /> },
+              { key: 'pnl', header: 'Realized P&L', align: 'right', render: (b) => {
+                const v = Number(b.realizedProfitUSDT || 0);
+                return <b className={v >= 0 ? 'text-up' : 'text-down'}>{v >= 0 ? '▲ +' : '▼ −'}${Math.abs(v).toFixed(2)}</b>;
+              } },
+              { key: 'actions', header: 'Actions', align: 'center', actions: true, mono: false, render: (b) => (
+                b.status === 'COMPLETED' ? <span className="text-muted">Completed</span> : (
+                  <div className="flex items-center justify-center gap-2">
+                    <button onClick={() => handleTogglePause(b.id)} className="rounded-lg border border-line bg-raised px-3 py-1.5 text-xs font-semibold text-ink">{b.status === 'RUNNING' ? 'Pause' : 'Resume'}</button>
+                    <button onClick={() => handleStopBot(b.id)} className="rounded-lg border border-down/50 bg-down/10 px-3 py-1.5 text-xs font-semibold text-down">Stop</button>
+                  </div>
+                )
+              ) },
+            ]}
+          />
+        </div>
+      )}
 
       {/* Empty State */}
       {filteredBots.length === 0 && (
@@ -520,7 +564,7 @@ export default function AlgoBots({ accounts, tickers }) {
       )}
 
       {/* Bots Grid Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 ${viewMode === 'list' ? 'hidden' : ''}`}>
         {filteredBots.map((bot) => {
           const isRunning = bot.status === 'RUNNING';
           const isCompleted = bot.status === 'COMPLETED';
@@ -938,7 +982,26 @@ export default function AlgoBots({ accounts, tickers }) {
               <button onClick={() => setShowDeployModal(false)} className="text-slate-500 hover:text-white">✕</button>
             </div>
 
-            <form onSubmit={handleDeployBot} className="flex flex-col gap-3 mt-4">
+            <form
+              onSubmit={(e) => {
+                // Enter advances the wizard; only the Review step deploys.
+                if (wizStep < 4) { e.preventDefault(); setWizStep(wizStep + 1); return; }
+                handleDeployBot(e);
+              }}
+              className="flex flex-col gap-3 mt-4"
+            >
+              <ol className="flex items-center gap-2 text-xs" aria-label="Steps">
+                {['Strategy', 'Pair & size', 'Risk', 'Review'].map((label, i) => {
+                  const n = i + 1;
+                  return (
+                    <li key={label} className={`flex flex-1 items-center gap-1.5 ${wizStep === n ? 'text-ink font-semibold' : 'text-muted'}`} aria-current={wizStep === n ? 'step' : undefined}>
+                      <span className={`grid size-5 shrink-0 place-items-center rounded-full font-mono text-[11px] ${wizStep === n ? 'bg-accent text-canvas' : wizStep > n ? 'bg-up/20 text-up' : 'bg-raised'}`}>{wizStep > n ? '✓' : n}</span>
+                      <span className="truncate">{label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+              <div className={wizStep === 1 ? 'flex flex-col gap-3' : 'hidden'}>
               {/* Bot Type Picker */}
               <div>
                 <label className="text-[11px] text-slate-400 font-medium">Select Bot Strategy</label>
@@ -1013,6 +1076,8 @@ export default function AlgoBots({ accounts, tickers }) {
                 />
               </div>
 
+              </div>
+              <div className={wizStep === 2 ? 'flex flex-col gap-3' : 'hidden'}>
               {/* Account and Symbol */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -1367,6 +1432,8 @@ export default function AlgoBots({ accounts, tickers }) {
                 </div>
               )}
 
+              </div>
+              <div className={wizStep === 3 ? 'flex flex-col gap-3' : 'hidden'}>
               {/* Risk management: drawdown, profit target, trailing stop (all bot types) */}
               <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between">
@@ -1395,6 +1462,8 @@ export default function AlgoBots({ accounts, tickers }) {
                 </p>
               </div>
 
+              </div>
+              <div className={wizStep === 2 ? 'flex flex-col gap-3' : 'hidden'}>
               {/* DCA Accumulator params */}
               {botType === 'DCA_ACCUMULATOR' && (
                 <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
@@ -1425,6 +1494,8 @@ export default function AlgoBots({ accounts, tickers }) {
                 </div>
               )}
 
+              </div>
+              <div className={wizStep === 3 ? 'flex flex-col gap-3' : 'hidden'}>
               {/* Time-based exit (all bot types) */}
               <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
                 <div className="grid grid-cols-2 gap-2">
@@ -1443,21 +1514,50 @@ export default function AlgoBots({ accounts, tickers }) {
                 </p>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800 mt-2">
+              </div>
+
+              {wizStep === 4 && (() => {
+                const target = accounts.find((a) => a.id === targetAccountId);
+                const live = target?.mode === 'REAL';
+                return (
+                  <div className={`rounded-xl border p-4 ${live ? 'border-live/60 bg-live/5' : 'border-line bg-canvas'}`}>
+                    <p className="text-sm font-semibold text-ink">Review before you start</p>
+                    <dl className="mt-3 space-y-2 text-sm">
+                      {[
+                        ['Strategy', botType.replace(/_/g, ' ')],
+                        ['Name', botName || 'Auto-named'],
+                        ['Pair', symbol],
+                        ['Account', target ? `${target.accountName} (${target.broker})` : '—'],
+                      ].map(([k, v]) => (
+                        <div key={k} className="flex justify-between border-t border-line pt-2 first:border-0 first:pt-0">
+                          <dt className="text-muted">{k}</dt><dd className="font-mono text-ink">{v}</dd>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between border-t border-line pt-2">
+                        <dt className="text-muted">Starts in</dt>
+                        <dd><span className={`rounded-md px-2 py-0.5 text-xs font-bold ${live ? 'bg-live text-canvas' : 'bg-paper/15 text-paper'}`}>{live ? 'LIVE · real orders' : 'PAPER · simulated'}</span></dd>
+                      </div>
+                    </dl>
+                    {live && <p className="mt-3 text-xs text-live">A final confirmation will ask you to approve this live bot.</p>}
+                  </div>
+                );
+              })()}
+
+              <div className="flex items-center justify-between gap-2 pt-3 border-t border-line mt-2">
                 <button
                   type="button"
-                  onClick={() => setShowDeployModal(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-white rounded-lg bg-slate-800"
+                  onClick={() => (wizStep === 1 ? setShowDeployModal(false) : setWizStep(wizStep - 1))}
+                  className="px-4 py-2 text-xs font-semibold text-ink rounded-lg border border-line bg-raised"
                 >
-                  Cancel
+                  {wizStep === 1 ? 'Cancel' : 'Back'}
                 </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors"
-                >
-                  {loading ? 'Deploying...' : 'Deploy & Run Bot'}
-                </button>
+                {wizStep < 4 ? (
+                  <button type="button" onClick={() => setWizStep(wizStep + 1)} className="px-4 py-2 text-xs font-bold text-canvas bg-accent rounded-lg">Next</button>
+                ) : (
+                  <button type="submit" disabled={loading} className="px-4 py-2 text-xs font-bold text-canvas bg-up rounded-lg disabled:opacity-50">
+                    {loading ? 'Deploying...' : 'Deploy & Run Bot'}
+                  </button>
+                )}
               </div>
             </form>
           </div>

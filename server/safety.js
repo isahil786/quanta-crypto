@@ -1,6 +1,6 @@
 // Safety module: emergency stop, order reconciliation, exposure limits.
 import { accounts, orders, emergencyStop, exposureLimits } from './state.js';
-import { getAdapter, getMasterAccounts } from './poller.js';
+import { getAdapter, SUPPORTED_BROKERS } from './poller.js';
 import { releaseOrder } from './positions.js';
 import { uid } from './util.js';
 
@@ -123,7 +123,7 @@ export async function cancelAllOpenOrders(confirmNonce, resolveAdapter = getAdap
    ORDER RECONCILIATION
    ================================================================ */
 
-/** Compare local order state vs exchange open orders for all master accounts.
+/** Compare local order state vs exchange open orders for all REAL accounts.
  *  Auto-corrects drift:
  *   - Local OPEN but missing from exchange -> mark CANCELLED (assume filled/cancelled externally)
  *   - Exchange has order but local missing -> create local record (best effort)
@@ -133,7 +133,9 @@ export async function reconcileOrders() {
   const actions = [];
   const errors = [];
 
-  const masters = getMasterAccounts();
+  // Every REAL account on a supported exchange, not just masters: orders placed through this app or the exchange's
+  // own app can be cancelled/filled behind our back on any of them.
+  const masters = accounts.filter((a) => a.mode === 'REAL' && a.status === 'ACTIVE' && SUPPORTED_BROKERS.has(a.broker));
   for (const master of masters) {
     const adapter = getAdapter(master);
     let exchangeOrders;
@@ -160,8 +162,15 @@ export async function reconcileOrders() {
         try {
           exOrder = await adapter.getOrder(master.id, exId);
           exOrderStatus = normalizeStatus(exOrder.status);
-        } catch {
-          // Order not found on exchange at all — treat as cancelled.
+          local._lookupMisses = 0;
+        } catch (err) {
+          // A failed lookup is not proof the order is gone (timeout, rate limit, exchange outage).
+          // Only give up after repeated misses, otherwise a live order would be marked cancelled and its funds released.
+          local._lookupMisses = (local._lookupMisses || 0) + 1;
+          if (local._lookupMisses < 3) {
+            errors.push({ accountId: master.id, orderId: local.id, reason: `order lookup failed (${local._lookupMisses}/3): ${sanitizeAdapterError(err)}` });
+            continue;
+          }
           exOrderStatus = 'CANCELLED';
         }
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -7,8 +6,8 @@ import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { loadState, startPersistence } from './server/persist.js';
-import { loadSeedAccounts, mergeSeedCredentials, applySeedSettings, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
+import { installConsoleCapture, getLogs, clearLogs } from './server/logs.js';
+import { loadSeedAccounts, mergeSeedCredentials, DEFAULT_ACCOUNTS_FILE } from './server/security/accounts.js';
 import {
   BROKERS,
   DEFAULT_BROKER,
@@ -17,9 +16,9 @@ import {
   signDeltaRequest,
   signCoinDCXRequest,
 } from './server/brokers/index.js';
-import type { ExecutionAdapter } from './server/execution/types.js';
+import type { ExecutionAdapter, OrderSide, OrderType } from './server/execution/types.js';
 import { BinanceAdapter } from './server/execution/binance.js';
-import { CoinSwitchAdapter } from './server/execution/coinswitch.js';
+import { CoinSwitchAdapter, toCoinSwitchSymbol } from './server/execution/coinswitch.js';
 import { DeltaAdapter } from './server/execution/delta.js';
 import { CoindcxAdapter } from './server/execution/coindcx.js';
 import {
@@ -31,12 +30,11 @@ import {
   mirrorConfig,
 } from './server/state.js';
 import { uid, mask, isPositiveNumber } from './server/util.js';
-import { summarizeBalances, getUsdtInrRate } from './server/balances.js';
-import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmounts, findOrderForEvent } from './server/positions.js';
+import { checkMargin, settleOrderFill, reserveOrder, releaseOrder, reserveAmounts, findOrderForEvent, syncUsdtHolding, syncBaseHolding } from './server/positions.js';
 import { feePct as feeFor, feeRates, executionCost, slippageConfig } from './server/costs.js';
 import { shouldMirror, mirrorFilledOrder } from './server/mirror.js';
 import { halalMarket, isHalalSymbol } from './server/halal.js';
-import { startPoller, mirrorMasterOrder } from './server/poller.js';
+import { startPoller, mirrorMasterOrder, getAdapter as getSharedAdapter, adapters as realAdapters, setAdapterFactory } from './server/poller.js';
 import {
   isEmergencyStopActive,
   activateEmergencyStop,
@@ -58,11 +56,13 @@ import {
   getCachedTop100,
   applyTickerUpdate,
   startPriceFeed,
+  stopPriceFeed,
   subscribeSymbol,
   unsubscribeSymbol,
   getLiveOrderBookDepth,
   getLiveRecentTrades,
   getLiveKlines,
+  getInrUsdtRate,
 } from './server/binance.js';
 import {
   botsState,
@@ -80,12 +80,13 @@ import {
 } from './server/backtest.js';
 
 dotenv.config();
+installConsoleCapture();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 6001;
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
 // Behind Render/Docker proxies every client shares the proxy's IP unless we trust X-Forwarded-For,
@@ -98,7 +99,8 @@ app.use(helmet({
     directives: {
       'default-src': ["'self'"],
       'script-src': ["'self'"],
-      'style-src': ["'self'", "'unsafe-inline'"], // React inline style attributes
+      'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], // React inline styles + Google Fonts stylesheet
+      'font-src': ["'self'", 'https://fonts.gstatic.com', 'data:'],
       'img-src': ["'self'", 'data:'],
       'connect-src': ["'self'", 'ws:', 'wss:'],
       'object-src': ["'none'"],
@@ -106,6 +108,17 @@ app.use(helmet({
     },
   },
 }));
+// DNS-rebinding guard: while the server is bound to loopback, only accept requests addressed to a loopback
+// name. A hostile web page that rebinds its domain to 127.0.0.1 sends its own Host header and is refused.
+// ALLOWED_HOSTS=a.example,b.example adds names; it is not applied on non-loopback binds (API_TOKEN protects those).
+const LOOPBACK_BIND = ['127.0.0.1', 'localhost', '::1'].includes(process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'));
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', ...(process.env.ALLOWED_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)]);
+app.use((req, res, next) => {
+  if (process.env.QUANTA_TEST || !LOOPBACK_BIND) return next();
+  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  if (ALLOWED_HOSTS.has(host)) return next();
+  res.status(403).json({ error: 'Host not allowed' });
+});
 app.use(express.json({ limit: '100kb' }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_PER_MIN) || 600, standardHeaders: true, legacyHeaders: false }));
 
@@ -147,7 +160,7 @@ function accountCredentials(account) {
 }
 
 /** Apply a real exchange fill event to local orders/trades/positions state. */
-function applyRealFill(account, event) {
+export function applyRealFill(account, event) {
   const order = findOrderForEvent(orders, account.id, event);
   if (!order) {
     // Not an order this app placed: if it is on the master (phone/portal), copy it to the replicas.
@@ -158,24 +171,40 @@ function applyRealFill(account, event) {
   const prevFilled = Number(order.filledSize || 0);
   const newFilled = Number(event.filledSize || 0);
   const incremental = newFilled - prevFilled;
-  if (incremental <= 0) return; // already processed
+  const terminal = normalizeStatus(event.status);
+  const isTerminal = terminal === 'CANCELLED' || terminal === 'EXPIRED' || terminal === 'REJECTED';
+  if (incremental <= 0) {
+    // No new fill, but the exchange may have cancelled/expired the order (e.g. from the phone app)
+    if (isTerminal && (order.status === 'OPEN' || order.status === 'PARTIALLY_FILLED')) order.status = terminal;
+    return; // already processed
+  }
 
   const fillPrice = Number(event.fillPrice || order.price || 0);
-  const feePct = feeFor(account.broker, 'TAKER');
+  const asset = String(order.symbol).replace(/\/USDT$/, '').replace(/USDT$/, '');
   const value = fillPrice * incremental;
-  const fee = Number(((value * feePct) / 100).toFixed(4));
+  // Prefer the commission the exchange reported for this fill (USDT, or the base coin which we value at the fill price).
+  // Fall back to the configured TAKER estimate when it is missing, in another coin (e.g. BNB) or covers a different amount.
+  let fee = Number(((value * feeFor(account.broker, 'TAKER')) / 100).toFixed(4));
+  let feeInBase = 0; // commission paid in the base coin reduces what a BUY actually receives
+  const reported = Number(event.fee);
+  const sameFill = event.lastFilledSize === undefined || Math.abs(Number(event.lastFilledSize) - incremental) <= incremental * 1e-6;
+  if (Number.isFinite(reported) && reported >= 0 && event.fee !== undefined && sameFill) {
+    const feeAsset = String(event.feeAsset || '').toUpperCase();
+    if (feeAsset === 'USDT') fee = Number(reported.toFixed(6));
+    else if (feeAsset === asset.toUpperCase() && order.side === 'BUY') { feeInBase = reported; fee = Number((reported * fillPrice).toFixed(6)); }
+    else if (feeAsset === asset.toUpperCase()) fee = Number((reported * fillPrice).toFixed(6));
+  }
 
   // Update order
   order.filledSize = newFilled;
   order.fillPrice = fillPrice;
   order.fee = Number((Number(order.fee || 0) + fee).toFixed(4));
-  order.status = newFilled >= Number(order.size) ? 'FILLED' : 'PARTIALLY_FILLED';
+  order.status = newFilled >= Number(order.size) ? 'FILLED' : isTerminal ? terminal : 'PARTIALLY_FILLED';
 
   // Update account balance (fee + notional)
   account.availableMarginUSDT = Number((account.availableMarginUSDT - fee).toFixed(6));
   account.totalEquityUSDT = Number((account.totalEquityUSDT - fee).toFixed(6));
 
-  const asset = String(order.symbol).replace(/\/USDT$/, '').replace(/USDT$/, '');
   let sellAvgCost = 0;
 
   if (order.side === 'BUY') {
@@ -185,9 +214,10 @@ function applyRealFill(account, event) {
       h = { accountId: account.id, broker: account.broker, asset, name: asset, free: 0, locked: 0, total: 0, rateUSDT: 0, valueUSDT: 0, avgCost: 0 };
       holdings.push(h);
     }
-    h.avgCost = (h.avgCost * h.total + value) / (h.total + incremental);
-    h.total = Number((h.total + incremental).toFixed(10));
-    h.free = Number((h.free + incremental).toFixed(10));
+    const received = Math.max(incremental - feeInBase, 0);
+    h.avgCost = (h.avgCost * h.total + value) / ((h.total + received) || 1);
+    h.total = Number((h.total + received).toFixed(10));
+    h.free = Number((h.free + received).toFixed(10));
     h.rateUSDT = fillPrice;
     h.valueUSDT = Number((h.total * fillPrice).toFixed(2));
   } else {
@@ -280,7 +310,7 @@ async function mirrorExternalMasterOrder(account, event) {
 }
 
 // Per-account real execution adapters (created lazily, credentials decrypted in-memory only).
-const realAdapters = new Map<string, ExecutionAdapter>();
+// (adapters live in poller.js so mirroring, reconciliation and order routes share one instance per account)
 
 // Balance sync dedup + TTL cache: prevents duplicate getAccountInfo calls within the TTL window.
 const balanceInflight = new Map<string, Promise<any>>();
@@ -302,6 +332,7 @@ type ExecutionAccountLike = {
   apiSecret: string;
   segment?: string;
   exchange?: string;
+  onDisconnect?: (accountId: string) => void;
 };
 
 function createRealAdapter(account: { id: string; broker: string; apiKey: string; apiSecret: string; segment?: string; exchange?: string }, { onDisconnect }: { onDisconnect?: (accountId: string) => void } = {}): ExecutionAdapter | undefined {
@@ -329,115 +360,24 @@ async function syncFillsAfterDisconnect(account) {
 }
 
 function getRealAdapter(account): ExecutionAdapter | undefined {
-  let adapter = realAdapters.get(account.id);
-  if (!adapter) {
-    const creds = accountCredentials(account);
-    if (!creds.apiKey || !creds.apiSecret) return undefined;
-    adapter = createRealAdapter({ id: account.id, broker: account.broker, apiKey: creds.apiKey, apiSecret: creds.apiSecret, segment: account.segment, exchange: account.exchange }, {
-      onDisconnect: (aid) => {
-        const acct = accounts.find((a) => a.id === aid);
-        if (acct) syncFillsAfterDisconnect(acct);
-      },
-    });
-    if (adapter) realAdapters.set(account.id, adapter);
-  }
-  return adapter;
+  const creds = accountCredentials(account);
+  if (!creds.apiKey || !creds.apiSecret) return undefined;
+  return getSharedAdapter(account);
 }
-
-// -------------------------------------------------------------
-// Real wallet balance sync (module level so routes AND the startup loop can use it)
-// -------------------------------------------------------------
-/** Write a fetched wallet into the account's USDT numbers and holdings rows. */
-function applyBalanceData(account, info, inrPerUsdt = 0) {
-  const sum = summarizeBalances(info.balances);
-  const seen = new Set<string>();
-  for (const b of sum.balances) {
-    seen.add(b.asset);
-    const isCash = b.asset === 'USDT';
-    let row = holdings.find((h) => h.accountId === account.id && h.asset === b.asset);
-    if (!row) {
-      row = { accountId: account.id, broker: account.broker, asset: b.asset, name: b.asset, free: 0, locked: 0, total: 0, rateUSDT: isCash ? 1 : 0, valueUSDT: 0, avgCost: 0 };
-      holdings.push(row);
-    }
-    row.free = b.free; row.locked = b.locked; row.total = b.total;
-    if (isCash) { row.rateUSDT = 1; row.valueUSDT = b.total; }
-    else if (['USDC', 'USD'].includes(b.asset)) { row.rateUSDT = 1; row.valueUSDT = Number(b.total.toFixed(2)); }
-    else if (b.asset === 'INR') { // no INRUSDT market: value it with the USDT/INR rate (display only)
-      if (inrPerUsdt > 0) row.rateUSDT = 1 / inrPerUsdt;
-      row.valueUSDT = Number((b.total * (row.rateUSDT || 0)).toFixed(2));
-    }
-    else if (row.rateUSDT) row.valueUSDT = Number((b.total * row.rateUSDT).toFixed(2));
-  }
-  // Assets that were sold off / withdrawn disappear from the exchange listing: zero them, don't leave stale rows.
-  for (const h of holdings) {
-    if (h.accountId === account.id && h.asset !== 'USDT' && !seen.has(h.asset)) { h.free = 0; h.locked = 0; h.total = 0; h.valueUSDT = 0; }
-  }
-  let cash = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
-  if (!cash) {
-    cash = { accountId: account.id, broker: account.broker, asset: 'USDT', name: 'Tether USD', free: 0, locked: 0, total: 0, rateUSDT: 1, valueUSDT: 0 };
-    holdings.push(cash);
-  }
-  cash.free = sum.freeUSDT; cash.locked = sum.lockedUSDT; cash.total = sum.freeUSDT + sum.lockedUSDT;
-  cash.rateUSDT = 1; cash.valueUSDT = cash.total;
-  account.availableMarginUSDT = sum.freeUSDT;
-  account.totalEquityUSDT = sum.freeUSDT + sum.lockedUSDT;
-  const inr = sum.balances.find((b) => b.asset === 'INR');
-  account.inrBalance = inr ? inr.total : 0;
-  account.inrBalanceUSDT = inr && inrPerUsdt > 0 ? Number((inr.total / inrPerUsdt).toFixed(2)) : 0;
-  account.usdtInrRate = inrPerUsdt || undefined;
-  return sum;
-}
-
-/** Fetch the real wallet for a REAL-mode account. Never throws: the outcome is stored on account.balanceSync
- *  (ok / error / notes) so the UI can show WHY a balance is 0 instead of silently showing 0. */
-async function syncAccountBalances(account, { force = false } = {}) {
-  if (account.mode !== 'REAL') return { ok: false, error: 'Account is in PAPER mode (simulated balance).' };
-  const adapter = getRealAdapter(account);
-  if (!adapter) {
-    account.balanceSync = { ok: false, at: new Date().toISOString(), error: 'No usable API key/secret for this account.' };
-    return account.balanceSync;
-  }
-  const inflight = balanceInflight.get(account.id);
-  if (inflight) return inflight;
-  const cached = balanceCache.get(account.id);
-  if (!force && cached && Date.now() - cached.ts < BALANCE_TTL_MS) return account.balanceSync || { ok: true };
-
-  const promise = (async () => {
-    try {
-      const info = await adapter.getAccountInfo(account.id);
-      balanceCache.set(account.id, { data: info, ts: Date.now() });
-      const sum = applyBalanceData(account, info, await getUsdtInrRate());
-      // Value the other coins at live Binance USDT prices so the account shows its whole wallet, not just USDT.
-      try {
-        const px = await getLivePriceIndex();
-        for (const h of holdings) {
-          if (h.accountId !== account.id || ['USDT', 'USDC', 'USD', 'INR'].includes(h.asset) || !(h.total > 0)) continue;
-          const p = px.get(`${h.asset}USDT`)?.price;
-          if (p) { h.rateUSDT = p; h.valueUSDT = Number((h.total * p).toFixed(2)); }
-        }
-      } catch { /* prices unavailable: coins stay unvalued */ }
-      account.portfolioValueUSDT = Number(holdings.filter((h) => h.accountId === account.id).reduce((t, h) => t + (Number(h.valueUSDT) || 0), 0).toFixed(2));
-      const returned = sum.balances.map((b) => `${b.asset} ${b.total}`);
-      account.balanceSync = { ok: true, at: new Date().toISOString(), cashAsset: sum.cashAsset, notes: sum.notes, assets: sum.balances.filter((b) => b.total > 0).length,
-        // What the exchange actually returned, so a 0 can be told apart from a parsing/wallet problem.
-        returned: returned.slice(0, 30), rowCount: sum.balances.length };
-      console.log(`[balance] synced ${account.accountName}: ${account.availableMarginUSDT} free USDT${sum.notes.length ? ' | ' + sum.notes.join(' ') : ''}`);
-    } catch (err) {
-      const message = (err as Error).message;
-      account.balanceSync = { ok: false, at: new Date().toISOString(), error: message };
-      console.warn(`[balance] sync failed for ${account.accountName}: ${message}`);
-    } finally {
-      balanceInflight.delete(account.id);
-    }
-    return account.balanceSync;
-  })();
-  balanceInflight.set(account.id, promise);
-  return promise;
-}
+setAdapterFactory((account) => {
+  const creds = accountCredentials(account);
+  return createRealAdapter({ id: account.id, broker: account.broker, apiKey: creds.apiKey, apiSecret: creds.apiSecret, segment: account.segment, exchange: account.exchange }, {
+    onDisconnect: (aid) => {
+      const acct = accounts.find((a) => a.id === aid);
+      if (acct) syncFillsAfterDisconnect(acct);
+    },
+  });
+});
 
 const num = (v) => Number(v);
 const VALID_SIDES = new Set(['BUY', 'SELL']);
 const VALID_ORDER_TYPES = new Set(['MARKET', 'LIMIT']);
+const VALID_TIF = new Set(['GTC', 'IOC', 'FOK']);
 
 /** TP/SL sanity: they must be positive numbers on the profit/loss side of the entry. Returns an error string or null. */
 function checkTpSl(side: string, entry: number, tp: any, sl: any): string | null {
@@ -477,12 +417,9 @@ app.get('/api/accounts', (req, res) => {
   res.json(accounts.map(sanitizeAccount));
 });
 
-app.post('/api/accounts', async (req, res) => {
+app.post('/api/accounts', (req, res) => {
   try {
-    const { broker, accountName, segment = 'SPOT', mode = 'PAPER' } = req.body;
-    const apiKey = String(req.body.apiKey ?? '').trim();
-    const apiSecret = String(req.body.apiSecret ?? '').trim();
-    if (!['PAPER', 'REAL'].includes(mode)) return res.status(400).json({ error: "mode must be 'PAPER' or 'REAL'" });
+    const { broker, accountName, apiKey = '', apiSecret = '', segment = 'SPOT', mode = 'PAPER' } = req.body;
     if (!broker || !accountName) {
       return res.status(400).json({ error: 'Broker and Account Name are required' });
     }
@@ -502,15 +439,13 @@ app.post('/api/accounts', async (req, res) => {
       accountName: String(accountName).slice(0, 60),
       segment,
       status: 'ACTIVE',
-      mode,
-      exchange: String(req.body.exchange || 'c2c1'),
+      mode: 'PAPER',
       apiKeyMasked: apiKey ? mask(apiKey) : 'Not configured',
       apiKey,
       apiSecret,
       createdAt: new Date().toISOString(),
-      // REAL accounts start empty and are filled from the exchange wallet; only PAPER gets the simulated 10k.
-      totalEquityUSDT: mode === 'REAL' ? 0 : 10000.0,
-      availableMarginUSDT: mode === 'REAL' ? 0 : 10000.0,
+      totalEquityUSDT: 10000.0,
+      availableMarginUSDT: 10000.0,
       unrealizedPnlUSDT: 0,
       isMaster: Boolean(req.body.isMaster),
     };
@@ -520,19 +455,14 @@ app.post('/api/accounts', async (req, res) => {
       accountId: newAccount.id,
       broker: newAccount.broker,
       asset: 'USDT',
-      name: newAccount.mode === 'REAL' ? 'Tether USD' : 'Paper USDT balance',
-      free: newAccount.availableMarginUSDT,
+      name: 'Paper USDT balance',
+      free: 10000.0,
       locked: 0,
-      total: newAccount.availableMarginUSDT,
+      total: 10000.0,
       rateUSDT: 1.0,
-      valueUSDT: newAccount.availableMarginUSDT,
+      valueUSDT: 10000.0,
     });
 
-    if (newAccount.mode === 'REAL') {
-      await syncAccountBalances(newAccount, { force: true });
-      const adapter = getRealAdapter(newAccount);
-      adapter?.connectUserStream(newAccount.id).catch((e) => console.warn(`[stream] ${newAccount.accountName}:`, e.message));
-    }
     res.status(201).json(sanitizeAccount(newAccount));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -570,19 +500,22 @@ app.patch('/api/accounts/:id/mode', async (req, res) => {
     try {
       if (mode === 'REAL' && !adapter.isConnected(account.id)) await adapter.connectUserStream(account.id);
       if (mode === 'PAPER' && prevMode === 'REAL') await adapter.disconnectUserStream(account.id);
+      if (mode === 'REAL' && account.broker === 'coinswitch' && !adapter.isBalanceStreamConnected?.(account.id)) {
+        await adapter.connectBalanceStream!(account.id);
+      }
+      if (mode === 'PAPER' && prevMode === 'REAL' && account.broker === 'coinswitch') {
+        adapter.disconnectBalanceStream?.(account.id);
+      }
     } catch (err) {
       console.warn(`[stream] mode switch stream change failed for ${account.accountName}:`, (err as Error).message);
     }
   }
-  // Going REAL: replace the simulated balance with the exchange wallet right away.
-  const sync = mode === 'REAL' ? await syncAccountBalances(account, { force: true }) : undefined;
   res.json({
     success: true,
     accountId: account.id,
     accountName: account.accountName,
     previousMode: prevMode,
     currentMode: account.mode,
-    balanceSync: sync,
   });
 });
 
@@ -607,7 +540,6 @@ app.post('/api/accounts/test-connection', async (req, res) => {
   let pingTarget = 'https://coinswitch.co';
   if (broker === 'delta') pingTarget = 'https://api.india.delta.exchange/v2/products';
   if (broker === 'coindcx') pingTarget = 'https://public.coindcx.com/exchange/v1/ping';
-  if (broker === 'binance') pingTarget = 'https://api.binance.com/api/v3/ping';
 
   const startPing = Date.now();
   let reachable = true;
@@ -618,44 +550,40 @@ app.post('/api/accounts/test-connection', async (req, res) => {
   }
   const latencyMs = Date.now() - startPing;
 
-  // 2) Authenticated call: fetch the real wallet with these keys (read-only, places nothing).
+  // 2) Check that a request can be signed with the stored credentials (does NOT call the exchange)
   const credentialsPresent = Boolean(apiKey && apiSecret);
-  let verified = false;
-  let authError = '';
-  let walletSummary: any = null;
-  const AdapterClass = ADAPTER_CLASSES[broker];
-  if (credentialsPresent && AdapterClass && reachable) {
+  let headers = {};
+  let signingOk = false;
+  if (credentialsPresent) {
     try {
-      const probe = new AdapterClass({ id: stored?.id || 'probe', broker, apiKey, apiSecret, segment, exchange: stored?.exchange });
-      const info = await probe.getAccountInfo(stored?.id || 'probe');
-      const sum = summarizeBalances(info.balances);
-      verified = true;
-      walletSummary = { cashAsset: sum.cashAsset, freeUSDT: sum.freeUSDT, lockedUSDT: sum.lockedUSDT, assets: sum.balances.filter((b) => b.total > 0).map((b) => ({ asset: b.asset, total: b.total })), notes: sum.notes };
-      // A verified REAL account should show the real number immediately.
-      if (stored && stored.mode === 'REAL') await syncAccountBalances(stored, { force: true });
-    } catch (err) {
-      authError = (err as Error).message;
+      if (broker === 'coinswitch') headers = signCoinSwitchRequest('GET', '/trade/api/v2/user/profile', null, apiSecret);
+      else if (broker === 'delta') headers = signDeltaRequest('GET', '/v2/profile', '', '', apiSecret, apiKey);
+      else if (broker === 'coindcx') headers = signCoinDCXRequest({ timestamp: Date.now() }, apiSecret, apiKey);
+      signingOk = true;
+    } catch {
+      signingOk = false;
     }
   }
+  // Never echo real signatures back to the browser
+  const redactedHeaders = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k, /sig/i.test(k) || /key/i.test(k) ? '[redacted]' : v])
+  );
 
-  const status = !reachable ? 'NETWORK_OFFLINE' : !credentialsPresent ? 'NO_CREDENTIALS' : verified ? 'VERIFIED' : 'AUTH_FAILED';
+  const status = !reachable ? 'NETWORK_OFFLINE' : !credentialsPresent ? 'NO_CREDENTIALS' : signingOk ? 'REACHABLE_KEYS_UNVERIFIED' : 'SIGNING_FAILED';
   res.json({
-    success: verified,
+    success: reachable && credentialsPresent && signingOk,
     broker: brokerMeta.displayName,
     status,
     latencyMs,
     segment,
     capabilities: brokerMeta.capabilities,
-    verified,
-    wallet: walletSummary,
-    error: authError || undefined,
+    generatedHeaders: redactedHeaders,
+    verified: false,
     message: !reachable
       ? `${brokerMeta.displayName} is not reachable from this server.`
       : !credentialsPresent
       ? 'Exchange reachable, but no API key/secret is configured for this account.'
-      : verified
-      ? `Keys verified. Wallet: ${walletSummary.freeUSDT} free / ${walletSummary.lockedUSDT} locked ${walletSummary.cashAsset}.${walletSummary.notes.length ? ' ' + walletSummary.notes.join(' ') : ''}`
-      : `Exchange rejected the request: ${authError}`,
+      : 'Exchange reachable and a request can be signed with the stored keys. Keys are NOT verified by this check (no authenticated exchange call is made). Switch the account to REAL mode and use Sync Balance to verify them.',
   });
 });
 
@@ -663,6 +591,9 @@ app.delete('/api/accounts/:id', (req, res) => {
   const index = accounts.findIndex((a) => a.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: 'Account not found' });
+  }
+  if (accounts[index].mode === 'REAL' && orders.some((o) => o.accountId === accounts[index].id && o.mode === 'REAL' && o.status === 'OPEN')) {
+    return res.status(409).json({ error: 'This account has open live orders on the exchange. Cancel them before removing it.' });
   }
   const removed = accounts.splice(index, 1)[0];
   if (removed.isMaster) {
@@ -675,86 +606,32 @@ app.delete('/api/accounts/:id', (req, res) => {
   [positions, holdings].forEach(drop);
   for (const b of botsState.bots) if (b.accountId === removed.id && (b.status === 'RUNNING' || b.status === 'PAUSED')) { b.status = 'CANCELLED'; releaseBotSymbol(b); }
   mirrorConfig.replicas = mirrorConfig.replicas.filter((r) => r.accountId !== removed.id);
-  res.json({ success: true, removedId: removed.id });
-});
-
-// Diagnostic: the raw wallet payload as the exchange returned it (no credentials are in it).
-app.get('/api/accounts/:id/balance-debug', async (req, res) => {
-  const account = accounts.find((a) => a.id === req.params.id);
-  if (!account) return res.status(404).json({ error: 'Account not found' });
-  const adapter = getRealAdapter(account);
-  if (!adapter) return res.status(400).json({ error: 'No API credentials loaded for this account.' });
-  try {
-    const info = await adapter.getAccountInfo(account.id);
-    res.json({ mode: account.mode, exchange: account.exchange, parsed: info.balances, raw: info.raw });
-  } catch (err) {
-    res.status(502).json({ error: (err as Error).message });
+  // Drop the exchange adapter so its user-data stream stops applying fills to a removed account
+  const adapter = realAdapters.get(removed.id);
+  if (adapter) {
+    void adapter.disconnectUserStream(removed.id).catch(() => {});
+    if (removed.broker === 'coinswitch') adapter.disconnectBalanceStream?.(removed.id);
+    realAdapters.delete(removed.id);
   }
+  balanceCache.delete(removed.id);
+  res.json({ success: true, removedId: removed.id });
 });
 
 app.post('/api/accounts/:id/sync-balance', async (req, res) => {
   const account = accounts.find((a) => a.id === req.params.id);
   if (!account) return res.status(404).json({ error: 'Account not found' });
   if (account.mode !== 'REAL') {
-    return res.status(400).json({ error: 'Account is in PAPER mode: its balance is simulated. Switch it to REAL to read the exchange wallet.' });
+    return res.status(400).json({ error: 'Balance sync only applies to REAL-mode accounts; PAPER balances are simulated.' });
   }
-  const result = await syncAccountBalances(account, { force: true });
-  const status = result?.ok ? 200 : 502;
-  res.status(status).json({
-    success: Boolean(result?.ok),
-    account: account.id,
-    availableMarginUSDT: account.availableMarginUSDT,
-    totalEquityUSDT: account.totalEquityUSDT,
-    balanceSync: result,
-    error: result?.ok ? undefined : result?.error,
-  });
-});
-
-app.post('/api/accounts/:id/sync-orders', async (req, res) => {
-  const account = accounts.find((a) => a.id === req.params.id);
-  if (!account) return res.status(404).json({ error: 'Account not found' });
-  if (account.mode !== 'REAL') {
-    return res.status(400).json({ error: 'Account is in PAPER mode: switch it to REAL to sync orders from the exchange.' });
+  if (!ADAPTER_CLASSES[account.broker]) {
+    return res.status(400).json({ error: `Balance sync is not supported for ${account.broker} accounts.` });
   }
-  const adapter = getRealAdapter(account);
-  if (!adapter) {
-    return res.status(400).json({ error: 'Real trading adapter not configured for this account.' });
-  }
-  let exchangeOrders;
   try {
-    exchangeOrders = await adapter.getOpenOrders(account.id);
+    await syncAccountBalances(account);
+    res.json({ success: true, account: account.id, availableMarginUSDT: account.availableMarginUSDT, totalEquityUSDT: account.totalEquityUSDT });
   } catch (err) {
-    return res.status(502).json({ error: `Failed to fetch orders from exchange: ${(err as Error).message}` });
+    res.status(500).json({ error: (err as Error).message });
   }
-  const existingIds = new Set(orders.filter((o) => o.accountId === account.id).map((o) => o.exchangeOrderId).filter(Boolean));
-  const synced = [];
-  for (const eo of exchangeOrders) {
-    if (eo.exchangeOrderId && existingIds.has(eo.exchangeOrderId)) continue;
-    const localOrder = {
-      id: eo.clientOrderId || uid('ord-synced'),
-      clientOrderId: eo.clientOrderId,
-      exchangeOrderId: eo.exchangeOrderId,
-      accountId: account.id,
-      broker: account.broker,
-      symbol: eo.symbol,
-      side: eo.side,
-      orderType: eo.type,
-      price: eo.price ?? undefined,
-      size: eo.size,
-      filledSize: Number(eo.filledSize || 0),
-      status: eo.status === 'NEW' ? 'OPEN' : eo.status,
-      timeInForce: 'GTC',
-      leverage: 1,
-      timestamp: eo.timestamp || new Date().toISOString(),
-      fee: eo.fee ?? 0,
-      mode: 'REAL',
-      raw: eo.raw,
-    };
-    orders.unshift(localOrder);
-    if (orders.length > 10000) orders.length = 10000;
-    synced.push(localOrder);
-  }
-  res.json({ success: true, account: account.id, synced: synced.length, orders: synced });
 });
 
 // -------------------------------------------------------------
@@ -780,7 +657,13 @@ app.get('/api/halal/coins', async (_req, res) => {
 
 app.get('/api/market/depth', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    let symbol: string;
+    try {
+      symbol = validateSpotSymbol((req.query.symbol as string | undefined) || 'BTCUSDT');
+    } catch {
+      res.status(400).json({ error: 'Invalid symbol' });
+      return;
+    }
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 15;
     const depthData = await getLiveOrderBookDepth(symbol, limit);
     res.json(depthData);
@@ -791,7 +674,13 @@ app.get('/api/market/depth', async (req, res) => {
 
 app.get('/api/market/trades', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    let symbol: string;
+    try {
+      symbol = validateSpotSymbol((req.query.symbol as string | undefined) || 'BTCUSDT');
+    } catch {
+      res.status(400).json({ error: 'Invalid symbol' });
+      return;
+    }
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
     const tradesData = await getLiveRecentTrades(symbol, limit);
     res.json(tradesData);
@@ -800,12 +689,25 @@ app.get('/api/market/trades', async (req, res) => {
   }
 });
 
+const klineCache = new Map<string, { at: number; data: any }>();
 app.get('/api/market/klines', async (req, res) => {
   try {
-    const symbol = (req.query.symbol as string) || 'BTCUSDT';
+    let symbol: string;
+    try {
+      symbol = validateSpotSymbol((req.query.symbol as string | undefined) || 'BTCUSDT');
+    } catch {
+      res.status(400).json({ error: 'Invalid symbol' });
+      return;
+    }
     const interval = (req.query.interval as string) || '1h';
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 500;
+    // 1s micro-cache: several open charts polling the same candles share one upstream request
+    const key = `${symbol}|${interval}|${limit}`;
+    const hit = klineCache.get(key);
+    if (hit && Date.now() - hit.at < 1000) return res.json(hit.data);
     const klines = await getLiveKlines(symbol, interval, limit);
+    klineCache.set(key, { at: Date.now(), data: klines });
+    if (klineCache.size > 200) klineCache.delete(klineCache.keys().next().value);
     res.json(klines);
   } catch (err) {
     res.status(500).json({ error: `Failed to fetch live Binance klines: ${err.message}` });
@@ -888,37 +790,84 @@ app.post('/api/backtest/optimize', async (req, res) => {
 // -------------------------------------------------------------
 // 4. Orders & Execution (Executing at Live Market Prices)
 // -------------------------------------------------------------
-app.get('/api/orders', (req, res) => {
-  const { accountId, broker, status, page, limit } = req.query;
-  let filtered = [...orders];
+app.get('/api/orders', async (req, res) => {
+  try {
+    const { accountId, broker, status, page, limit } = req.query;
+    let localOrders = [...orders];
 
-  if (accountId) {
-    filtered = filtered.filter((o) => o.accountId === accountId);
+    // For REAL accounts, also fetch open orders from the exchange
+    const exchangeOrders = [];
+    const realAccounts = accountId
+      ? [accounts.find((a) => a.id === accountId)].filter(Boolean)
+      : accounts.filter((a) => a.mode === 'REAL');
+
+    for (const acc of realAccounts) {
+      if (broker && acc.broker !== broker) continue;
+      const adapter = getRealAdapter(acc);
+      if (!adapter) continue;
+      try {
+        const exOrders = await adapter.getOpenOrders(acc.id);
+        for (const eo of exOrders) {
+          const alreadyTracked = localOrders.some((o) => o.exchangeOrderId === eo.orderId);
+          if (alreadyTracked) continue;
+          exchangeOrders.push({
+            id: `ex-${eo.orderId}`,
+            accountId: acc.id,
+            broker: acc.broker,
+            symbol: eo.symbol,
+            side: eo.side,
+            orderType: eo.type,
+            price: eo.price,
+            size: eo.size,
+            filledSize: eo.filledSize || 0,
+            status: eo.status || 'OPEN',
+            timeInForce: 'GTC',
+            leverage: 1,
+            timestamp: eo.timestamp || new Date().toISOString(),
+            fee: eo.fee || 0,
+            mode: 'REAL',
+            exchangeOrderId: eo.orderId,
+            raw: eo.raw,
+            source: 'exchange',
+          });
+        }
+      } catch (err) {
+        console.warn(`[api/orders] failed to fetch exchange orders for ${acc.accountName}:`, (err as Error).message);
+      }
+    }
+
+    let filtered = [...localOrders, ...exchangeOrders];
+
+    if (accountId) {
+      filtered = filtered.filter((o) => o.accountId === accountId);
+    }
+    if (broker) {
+      filtered = filtered.filter((o) => o.broker === broker);
+    }
+    if (status) {
+      filtered = filtered.filter((o) => o.status === status);
+    }
+
+    filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    const pageNum = Math.max(Number(page || 1), 1);
+    const limitNum = Math.min(Math.max(Number(limit || 50), 1), 500);
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / limitNum) || 1;
+    const start = (pageNum - 1) * limitNum;
+    const paged = filtered.slice(start, start + limitNum);
+
+    res.json({
+      orders: paged,
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages,
+      hasMore: pageNum < totalPages,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  if (broker) {
-    filtered = filtered.filter((o) => o.broker === broker);
-  }
-  if (status) {
-    filtered = filtered.filter((o) => o.status === status);
-  }
-
-  filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-  const pageNum = Math.max(Number(page || 1), 1);
-  const limitNum = Math.min(Math.max(Number(limit || 50), 1), 500);
-  const total = filtered.length;
-  const totalPages = Math.ceil(total / limitNum) || 1;
-  const start = (pageNum - 1) * limitNum;
-  const paged = filtered.slice(start, start + limitNum);
-
-  res.json({
-    orders: paged,
-    page: pageNum,
-    limit: limitNum,
-    total,
-    totalPages,
-    hasMore: pageNum < totalPages,
-  });
 });
 
 app.post('/api/orders', async (req, res) => {
@@ -974,9 +923,24 @@ app.post('/api/orders', async (req, res) => {
 
     // --- REAL MODE: place order on the exchange --------------------------------
     if (account.mode === 'REAL') {
+      if (!VALID_TIF.has(String(timeInForce).toUpperCase())) {
+        return res.status(400).json({ error: 'timeInForce must be GTC, IOC or FOK' });
+      }
+      if ((tpPrice !== undefined && tpPrice !== null && tpPrice !== '') || (slPrice !== undefined && slPrice !== null && slPrice !== '')) {
+        // Nothing watches these on the exchange, so accepting them would give a false sense of protection
+        return res.status(400).json({ error: 'tpPrice/slPrice are not supported on live orders. Use a GTT rule or place the exit order yourself.' });
+      }
       const adapter = getRealAdapter(account);
       if (!adapter) {
         return res.status(400).json({ error: 'Real trading not configured for this account (missing Binance credentials or adapter).' });
+      }
+      // Make sure the balance we check is the exchange's current one (a never-synced REAL account shows 0.00)
+      if (side === 'BUY') {
+        try {
+          await syncAccountBalances(account);
+        } catch (err) {
+          return res.status(502).json({ error: `Could not read your ${account.broker} balance, so the order was not sent: ${(err as Error).message}` });
+        }
       }
       // Pre-trade margin guard: reject if available margin cannot cover notional + fee
       const livePair = orderType === 'LIMIT' ? undefined : (await getLivePriceIndex()).get(symbol);
@@ -987,28 +951,9 @@ app.post('/api/orders', async (req, res) => {
       const orderValue = refPrice * size;
       const feePct = feeFor(account.broker, 'TAKER');
       const fee = (orderValue * feePct) / 100;
-
-      // Live-trading safety: real orders are off until explicitly enabled, and capped per order.
-      if (process.env.LIVE_TRADING !== 'true') {
-        return res.status(403).json({ error: 'Live trading is disabled. Set LIVE_TRADING=true in .env and restart to send real orders.' });
-      }
-      const maxLive = Number(process.env.LIVE_MAX_ORDER_USDT ?? 50);
-      if (Number.isFinite(maxLive) && maxLive > 0 && orderValue > maxLive) {
-        return res.status(403).json({ error: `Order value ${orderValue.toFixed(2)} USDT exceeds the live per-order cap of ${maxLive} USDT (LIVE_MAX_ORDER_USDT).` });
-      }
-
-      // Funds guard: a BUY needs USDT; a SELL needs the coin itself (not USDT).
-      if (side === 'BUY') {
-        if (account.availableMarginUSDT < orderValue + fee) {
-          return res.status(400).json({ error: `Insufficient USDT: need ${(orderValue + fee).toFixed(2)} USDT, have ${account.availableMarginUSDT.toFixed(2)} USDT. Convert INR or sell a coin for USDT on the exchange first.` });
-        }
-      } else {
-        const baseAsset = String(symbol).toUpperCase().replace(/[/_]/g, '').replace(/USDT$/, '');
-        const held = holdings.find((h) => h.accountId === account.id && h.asset === baseAsset);
-        const freeCoins = held ? Number(held.free) : 0;
-        if (freeCoins + 1e-9 < size) {
-          return res.status(400).json({ error: `Insufficient ${baseAsset}: want to sell ${size}, have ${freeCoins} free. Sync the balance and try again.` });
-        }
+      // Only BUYs spend USDT. A SELL spends the base coin, which the exchange checks itself.
+      if (side === 'BUY' && account.availableMarginUSDT < orderValue + fee) {
+        return res.status(400).json({ error: `Insufficient margin: need ${(orderValue + fee).toFixed(2)} USDT, ${account.broker} reports ${account.availableMarginUSDT.toFixed(2)} USDT available. Add USDT to the spot wallet, or reduce the size.` });
       }
 
       // Slippage protection: reject MARKET orders if expected slippage exceeds the max allowed.
@@ -1029,8 +974,8 @@ app.post('/api/orders', async (req, res) => {
         placed = await adapter.placeOrder({
           accountId: account.id,
           symbol,
-          side,
-          type: orderType,
+          side: side as OrderSide,
+          type: orderType as OrderType,
           size,
           price: orderType === 'LIMIT' ? num(req.body.price) : undefined,
           timeInForce,
@@ -1359,7 +1304,46 @@ app.get('/api/positions', async (req, res) => {
   try {
     const liveCoins = await getLivePriceIndex();
 
-    // Update unrealized PnL dynamically from real Binance prices
+    // For REAL accounts, also fetch open orders from the exchange as positions
+    const exchangePositions = [];
+    for (const acc of accounts.filter((a) => a.mode === 'REAL')) {
+      const adapter = getRealAdapter(acc);
+      if (!adapter) continue;
+      try {
+        const exOrders = await adapter.getOpenOrders(acc.id);
+        for (const eo of exOrders) {
+          const livePair = liveCoins.get(eo.symbol);
+          const currentPrice = livePair ? livePair.price : Number(eo.price || 0);
+          const entryPrice = Number(eo.price || 0);
+          const size = Number(eo.size || 0);
+          const filledSize = Number(eo.filledSize || 0);
+          const remaining = size - filledSize;
+          if (remaining <= 0) continue;
+          const side = eo.side === 'BUY' ? 'LONG' : 'SHORT';
+          const priceDiff = side === 'LONG' ? currentPrice - entryPrice : entryPrice - currentPrice;
+          const uPnl = Number((priceDiff * remaining).toFixed(2));
+          exchangePositions.push({
+            id: `ex-pos-${eo.orderId}`,
+            accountId: acc.id,
+            broker: acc.broker,
+            symbol: eo.symbol,
+            side,
+            entryPrice,
+            size: remaining,
+            margin: entryPrice * remaining,
+            markPrice: currentPrice,
+            unrealizedPnl: uPnl,
+            pnlPercent: Number(((uPnl / (entryPrice * remaining)) * 100).toFixed(2)),
+            exchangeOrderId: eo.orderId,
+            source: 'exchange',
+          });
+        }
+      } catch (err) {
+        console.warn(`[api/positions] failed to fetch exchange orders for ${acc.accountName}:`, (err as Error).message);
+      }
+    }
+
+    // Update local positions with live prices
     const updated = positions.map((p) => {
       const livePair = liveCoins.get(p.symbol);
       const currentPrice = livePair ? livePair.price : p.markPrice;
@@ -1373,7 +1357,8 @@ app.get('/api/positions', async (req, res) => {
         pnlPercent,
       };
     });
-    res.json(updated);
+
+    res.json([...updated, ...exchangePositions]);
   } catch (err) {
     res.json(positions);
   }
@@ -1457,13 +1442,14 @@ app.get('/api/mirror', (req, res) => {
 
 app.post('/api/mirror/toggle', (req, res) => {
   const { enabled, masterAccountId } = req.body;
-  mirrorConfig.enabled = Boolean(enabled);
+  // Validate everything before changing anything, so a rejected request leaves the config untouched
   if (masterAccountId) {
     const master = accounts.find((a) => a.id === masterAccountId);
     if (!master) return res.status(404).json({ error: 'Master account not found' });
     if (!master.isMaster) return res.status(400).json({ error: 'Account is not marked as master' });
     mirrorConfig.masterAccountId = masterAccountId;
   }
+  mirrorConfig.enabled = Boolean(enabled);
   res.json({ success: true, enabled: mirrorConfig.enabled, masterAccountId: mirrorConfig.masterAccountId });
 });
 
@@ -1471,7 +1457,7 @@ app.post('/api/mirror/update-replica', (req, res) => {
   const { accountId, multiplier, active } = req.body;
   if (!accounts.some((a) => a.id === accountId)) return res.status(404).json({ error: 'Account not found' });
   if (accountId === mirrorConfig.masterAccountId) return res.status(400).json({ error: 'The master account cannot be a replica' });
-  if (multiplier !== undefined && !(Number(multiplier) >= 0 && Number(multiplier) <= 100)) {
+  if (multiplier !== undefined && !(Number(multiplier) > 0 && Number(multiplier) <= 100)) {
     return res.status(400).json({ error: 'multiplier must be between 0 and 100' });
   }
   const replica = mirrorConfig.replicas.find((r) => r.accountId === accountId);
@@ -1481,7 +1467,7 @@ app.post('/api/mirror/update-replica', (req, res) => {
   } else {
     mirrorConfig.replicas.push({
       accountId,
-      multiplier: Number(multiplier) || 0.5,
+      multiplier: Number(multiplier) || 1.0,
       active: active !== undefined ? Boolean(active) : true,
       maxSlippagePercent: 0.2,
       note: 'Added replica allocation',
@@ -1500,11 +1486,24 @@ app.get('/api/mirror/logs/export', (_req, res) => {
     l.details || '',
   ]);
   const csv = [headers, ...rows]
-    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
-  res.setHeader('Content-Type', 'text/csv');
+    // Prefix cells that a spreadsheet would run as a formula (= + - @ tab CR) so exported text stays text.
+    .map((r) => r.map((c) => { const t = String(c); return `"${(/^[=+\-@\t\r]/.test(t) ? `'${t}` : t).replace(/"/g, '""')}"`; }).join(','))
+    .join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="mirror-audit-log.csv"');
   res.send(csv);
+});
+
+// -------------------------------------------------------------
+// Server logs (in-memory, runtime only — nothing is written to disk)
+// -------------------------------------------------------------
+app.get('/api/logs', (_req, res) => {
+  res.json({ logs: getLogs() });
+});
+
+app.delete('/api/logs', (_req, res) => {
+  clearLogs();
+  res.json({ success: true, cleared: true });
 });
 
 // -------------------------------------------------------------
@@ -1605,6 +1604,10 @@ app.post('/api/bots', async (req, res) => {
     const account = accounts.find((a) => a.id === accountId);
     if (!account) {
       return res.status(404).json({ error: 'Target account not found' });
+    }
+    if (account.mode === 'REAL') {
+      // Bots only simulate fills against local state; on a live account they would book trades that never reached the exchange.
+      return res.status(400).json({ error: 'Bots are simulation-only and cannot run on a REAL-mode account. Use a PAPER account.' });
     }
     // HALAL_ONLY is enforced only when the user opts in via the halal toggle
     if (halalOnly === true && !isHalalSymbol(String(symbol || ''))) {
@@ -1760,7 +1763,6 @@ app.post('/api/bots', async (req, res) => {
         currentPrice: livePrice,
         sizePerGrid: Number(sizePerGrid),
         gridMode,
-        precision,
       });
 
       newBot = {
@@ -2007,6 +2009,9 @@ const binanceWsBySymbol = new Map<string, WebSocket>();
 const wsClients = new Set<WebSocket>();
 const MAX_WS_CLIENTS = Number(process.env.MAX_WS_CLIENTS) || 100;
 const symbolBotCounts = new Map<string, number>();
+const candleSubscribedSymbols = new Set<string>();
+let candleAdapter: ExecutionAdapter | null = null;
+let candleOnCandleUnsubscribe: (() => void) | null = null;
 
 /** Count a bot against its symbol's websocket subscription (once per bot). */
 function trackBotSymbol(bot) {
@@ -2039,8 +2044,66 @@ function broadcast(message: any) {
   }
 }
 
+/** Get a CoinSwitch adapter instance for managing the shared public market-data socket. */
+function getCoinSwitchMarketAdapter(): ExecutionAdapter | null {
+  const acct = accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL');
+  if (!acct) return null;
+  const adapter = getSharedAdapter(acct);
+  if ((adapter as any).broker !== 'coinswitch') return null;
+  return adapter;
+}
+
+/** Ensure the CoinSwitch market-data socket is connected and subscribed to all candle pairs. */
+async function ensureCandleSocket(pairs: string[]) {
+  if (pairs.length === 0) return;
+  try {
+    if (!candleAdapter) {
+      candleAdapter = getCoinSwitchMarketAdapter();
+      if (!candleAdapter) {
+        console.warn('[candle] no CoinSwitch REAL adapter available for market-data socket');
+        return;
+      }
+      if (typeof (candleAdapter as any).connectMarketDataSocket !== 'function') {
+        console.warn('[candle] adapter missing connectMarketDataSocket');
+        return;
+      }
+      if (typeof (candleAdapter as any).onCandle !== 'function') {
+        console.warn('[candle] adapter missing onCandle');
+        return;
+      }
+    }
+    await (candleAdapter as any).connectMarketDataSocket(pairs);
+    console.log(`[stream] connected CoinSwitch market-data socket for ${pairs.length} pair(s)`);
+    if (!candleOnCandleUnsubscribe) {
+      candleOnCandleUnsubscribe = (candleAdapter as any).onCandle((data: any) => {
+        broadcast({ type: 'candle', data, symbol: data.symbol });
+      });
+    }
+  } catch (err) {
+    console.error('[candle] ensureCandleSocket failed:', (err as Error).message);
+  }
+}
+
+/** Stop the CoinSwitch market-data socket when no candle subscriptions remain. */
+function stopCandleSocket() {
+  if (candleOnCandleUnsubscribe) { candleOnCandleUnsubscribe(); candleOnCandleUnsubscribe = null; }
+  if (candleAdapter && typeof (candleAdapter as any).disconnectMarketDataSocket === 'function') {
+    (candleAdapter as any).disconnectMarketDataSocket();
+    candleAdapter = null;
+  }
+}
+
 const WS_SYMBOL_RE = /^[A-Z0-9]{5,12}$/;
 const MAX_WS_SYMBOLS = 50;
+
+/** Validate a Binance spot symbol: uppercase alphanumeric, 5-12 chars. Returns normalized symbol or throws. */
+function validateSpotSymbol(symbol: string | undefined): string {
+  const sym = String(symbol || '').toUpperCase().replace('/', '');
+  if (!WS_SYMBOL_RE.test(sym)) {
+    throw new Error(`Invalid symbol: ${symbol}`);
+  }
+  return sym;
+}
 function ensureBinanceWs(symbol: string) {
   const sym = String(symbol).toUpperCase();
   if (!WS_SYMBOL_RE.test(sym)) return;
@@ -2091,7 +2154,7 @@ function ensureBinanceWs(symbol: string) {
   };
 
   bws.onerror = (err) => {
-    console.error(`[WS] Binance ticker error for ${sym}:`, (err as Error).message);
+    console.error(`[WS] Binance ticker error for ${sym}:`, (err as any)?.message ?? 'socket error');
     // Binance blocked (HTTP 451 / network errors): fall back to OKX in production
     if (process.env.NODE_ENV === 'production' && subscribedSymbols.has(sym)) ensureOkxWs(sym);
   };
@@ -2145,7 +2208,7 @@ function ensureOkxWs(symbol: string) {
     if (okxWs === ows) okxWs = null;
     if (okxSubscribedSymbols.size > 0) setTimeout(() => { const syms = [...okxSubscribedSymbols]; okxSubscribedSymbols.clear(); syms.forEach(ensureOkxWs); }, 3000);
   };
-  ows.onerror = (err) => console.error('[WS] OKX ticker error:', (err as Error).message);
+  ows.onerror = (err) => console.error('[WS] OKX ticker error:', (err as any)?.message ?? 'socket error');
 }
 
 function unsubscribeOkxWs(symbol: string) {
@@ -2184,10 +2247,8 @@ function seedAccountsFromFile(filePath) {
     if (existing) {
       // Restored from state.json (which holds no credentials): re-attach the keys from the seed file.
       if (mergeSeedCredentials(existing, seed)) console.log(`[seed] restored credentials for ${existing.accountName}`);
-      if (applySeedSettings(existing, seed)) console.log(`[seed] ${existing.accountName}: mode=${existing.mode} exchange=${existing.exchange}`);
       continue;
     }
-    delete seed.modeExplicit;
     accounts.push(seed);
     holdings.push({
       accountId: seed.id,
@@ -2228,7 +2289,113 @@ export function startReconciliationLoop(intervalMs = 60_000) {
   reconciliationTimer.unref?.();
 }
 
+// Fetch real wallet balances from the exchange for REAL-mode accounts (module scope: the sync-balance route uses it).
+async function syncAccountBalances(account) {
+  if (account.mode !== 'REAL' || !ADAPTER_CLASSES[account.broker]) return;
+  const adapter = getRealAdapter(account);
+  if (!adapter) return;
+
+  // In-flight dedup: return existing promise if a sync for this account is already running
+  const inflight = balanceInflight.get(account.id);
+  if (inflight) return inflight;
+
+  // TTL cache: skip exchange call if we have fresh data
+  const cached = balanceCache.get(account.id);
+  if (cached && Date.now() - cached.ts < BALANCE_TTL_MS) {
+    await applyBalanceCache(account, cached.data);
+    return cached.data;
+  }
+
+  const promise = (async () => {
+    try {
+      const info = await adapter.getAccountInfo(account.id);
+      balanceCache.set(account.id, { data: info, ts: Date.now() });
+      await applyBalanceData(account, info);
+      console.log(`[balance] synced ${account.accountName}`);
+    } catch (err) {
+      console.warn(`[balance] sync failed for ${account.accountName}:`, (err as Error).message);
+    } finally {
+      balanceInflight.delete(account.id);
+    }
+  })();
+  balanceInflight.set(account.id, promise);
+  return promise;
+}
+
+async function applyBalanceData(account, info) {
+  const usdtHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
+  let freeUSDT = 0, lockedUSDT = 0;
+  let inrFree = 0, inrLocked = 0;
+  for (const b of info.balances) {
+    const existing = holdings.find((h) => h.accountId === account.id && h.asset === b.asset);
+    const rateUSDT = b.asset === 'USDT' ? 1 : undefined;
+    if (existing) {
+      existing.free = b.free; existing.locked = b.locked; existing.total = b.total;
+      existing.rateUSDT = rateUSDT ?? existing.rateUSDT;
+      existing.valueUSDT = rateUSDT ? Number((b.total * rateUSDT).toFixed(2)) : existing.valueUSDT;
+    } else {
+      holdings.push({
+        accountId: account.id, broker: account.broker, asset: b.asset, name: b.asset,
+        free: b.free, locked: b.locked, total: b.total,
+        rateUSDT: rateUSDT ?? 0, valueUSDT: rateUSDT ? Number((b.total * rateUSDT).toFixed(2)) : 0,
+      });
+    }
+    if (b.asset === 'USDT') { freeUSDT = b.free; lockedUSDT = b.locked; }
+    if (b.asset === 'INR') { inrFree = b.free; inrLocked = b.locked; }
+  }
+  // Convert CoinSwitch INR wallet balance to USDT-equivalent so equity and
+  // order placement reflect real purchasing power (INR spot wallets hold no USDT by default).
+  if ((inrFree > 0 || inrLocked > 0) && account.broker === 'coinswitch') {
+    const rate = await getInrUsdtRate();
+    if (rate) {
+      const inrTotal = inrFree + inrLocked;
+      freeUSDT += inrFree / rate;
+      lockedUSDT += inrLocked / rate;
+      const inrHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'INR');
+      if (inrHolding) {
+        inrHolding.rateUSDT = Number((1 / rate).toFixed(8));
+        inrHolding.valueUSDT = Number((inrTotal / rate).toFixed(2));
+      }
+    }
+  }
+  if (usdtHolding) {
+    account.availableMarginUSDT = freeUSDT;
+    account.totalEquityUSDT = freeUSDT + lockedUSDT;
+    usdtHolding.free = freeUSDT; usdtHolding.locked = lockedUSDT; usdtHolding.total = freeUSDT + lockedUSDT;
+    usdtHolding.valueUSDT = freeUSDT + lockedUSDT;
+  }
+}
+
+async function applyBalanceCache(account, info) {
+  const usdtHolding = holdings.find((h) => h.accountId === account.id && h.asset === 'USDT');
+  let freeUSDT = 0, lockedUSDT = 0;
+  let inrFree = 0, inrLocked = 0;
+  for (const b of info.balances) {
+    if (b.asset === 'USDT') { freeUSDT = b.free; lockedUSDT = b.locked; }
+    if (b.asset === 'INR') { inrFree = b.free; inrLocked = b.locked; }
+  }
+  if ((inrFree > 0 || inrLocked > 0) && account.broker === 'coinswitch') {
+    const rate = await getInrUsdtRate();
+    if (rate) {
+      freeUSDT += inrFree / rate;
+      lockedUSDT += inrLocked / rate;
+    }
+  }
+  if (usdtHolding) {
+    account.availableMarginUSDT = freeUSDT;
+    account.totalEquityUSDT = freeUSDT + lockedUSDT;
+    usdtHolding.free = freeUSDT; usdtHolding.locked = lockedUSDT; usdtHolding.total = freeUSDT + lockedUSDT;
+    usdtHolding.valueUSDT = freeUSDT + lockedUSDT;
+  }
+}
+
+
 async function startServer() {
+  // Check this first, before any stream, poller or exchange connection is started
+  const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
+  if (!['127.0.0.1', 'localhost', '::1'].includes(HOST) && !API_TOKEN) {
+    throw new Error('Refusing to start on a non-loopback address without API_TOKEN set. The trading API would be unauthenticated.');
+  }
   if (isDev) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -2242,20 +2409,6 @@ async function startServer() {
     app.get('*', (req, res) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
-  }
-
-  // Persist state to disk so a restart doesn't wipe orders, positions,
-  // mirror config, bots, emergency-stop, and exposure-limit state. Defaults to
-  // data/state.json when STATE_FILE is not set.
-  const stateFile = process.env.STATE_FILE || path.resolve(process.cwd(), 'data', 'state.json');
-  try {
-    const restored = loadState(stateFile);
-    for (const b of botsState.bots) if (b.status === 'RUNNING' || b.status === 'PAUSED') { b._wsCounted = false; trackBotSymbol(b); }
-    const flush = startPersistence(stateFile);
-    for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => { flush(); process.exit(0); });
-    console.log(`[persist] ${restored ? 'restored state from' : 'writing state to'} ${stateFile}`);
-  } catch (err) {
-    console.error(`[persist] failed to initialise: ${err.message}`);
   }
 
   // Seed accounts from ACCOUNTS_FILE (user-editable JSON). Credentials are
@@ -2293,17 +2446,81 @@ async function startServer() {
     process.exit(1);
   }
 
-  // Real-mode accounts: fetch wallets and connect fill streams in the background so a slow or
-  // unreachable exchange never delays server start-up.
-  const realNow = () => accounts.filter((a) => a.mode === 'REAL' && ADAPTER_CLASSES[a.broker]);
-  void Promise.allSettled(realNow().map((a) => syncAccountBalances(a, { force: true })));
-  setInterval(() => { void Promise.allSettled(realNow().map((a) => syncAccountBalances(a))); }, 60_000).unref();
-  for (const a of realNow()) {
-    const adapter = getRealAdapter(a);
-    if (adapter && !adapter.isConnected(a.id)) {
-      adapter.connectUserStream(a.id)
-        .then(() => console.log(`[stream] connected user stream for ${a.accountName} (${a.broker})`))
-        .catch((err) => console.warn(`[stream] failed to connect user stream for ${a.accountName}:`, (err as Error).message));
+  // Auto-configure mirror trading: designate the isMaster account as master,
+  // and add other active CoinSwitch accounts as replicas. Runs on every startup
+  // since state persistence is disabled (no data/state.json).
+  try {
+    const master = accounts.find((a) => a.isMaster && a.mode === 'REAL' && ADAPTER_CLASSES[a.broker] && a.status === 'ACTIVE');
+    // Replicas must be on the master's exchange
+    const replicas = accounts.filter(
+      (a) => a.mode === 'REAL' && a.broker === master?.broker && a.status === 'ACTIVE' && a.id !== master?.id
+    );
+    if (master) {
+      mirrorConfig.masterAccountId = master.id;
+      mirrorConfig.replicas = replicas.map((r) => ({
+        accountId: r.id,
+        multiplier: 1.0,
+        active: true,
+        maxSlippagePercent: 0.2,
+        note: `Auto-added replica: ${r.accountName}`,
+      }));
+      console.log(`[mirror] master=${master.accountName}, replicas=${replicas.length}`);
+    } else {
+      mirrorConfig.masterAccountId = null;
+      mirrorConfig.replicas = [];
+      console.log('[mirror] no master account found (set isMaster: true in accounts.json)');
+    }
+  } catch (err) {
+    console.error(`[mirror] auto-config failed: ${err.message}`);
+  }
+
+  // Refresh balances concurrently for all REAL-mode accounts on startup.
+  const syncAllReal = () => Promise.all(
+    accounts.filter((a) => a.mode === 'REAL' && ADAPTER_CLASSES[a.broker]).map((a) =>
+      syncAccountBalances(a).catch((err) => console.warn(`[balance] sync failed for ${a.accountName}:`, (err as Error).message))));
+  await syncAllReal();
+
+  // Refresh balances every 30 seconds for REAL-mode accounts (concurrent, with a 30s TTL cache).
+  setInterval(syncAllReal, 30_000).unref();
+
+  // Connect real-time order/fill WebSocket streams for REAL-mode accounts.
+  const marketSymbols = new Set<string>();
+  for (const a of accounts) {
+    if (a.mode === 'REAL') {
+      const adapter = getRealAdapter(a);
+      if (adapter && !adapter.isConnected(a.id)) {
+        try {
+          await adapter.connectUserStream(a.id);
+          console.log(`[stream] connected user stream for ${a.accountName} (${a.broker})`);
+        } catch (err) {
+          console.warn(`[stream] failed to connect user stream for ${a.accountName}:`, (err as Error).message);
+        }
+      }
+      if (adapter && a.broker === 'coinswitch' && !adapter.isBalanceStreamConnected?.(a.id)) {
+        try {
+          await adapter.connectBalanceStream!(a.id);
+          console.log(`[stream] connected balance stream for ${a.accountName}`);
+        } catch (err) {
+          console.warn(`[stream] failed to connect balance stream for ${a.accountName}:`, (err as Error).message);
+        }
+      }
+      // Collect symbols from bots for CoinSwitch market-data socket.
+      if (a.broker === 'coinswitch') {
+        for (const b of botsState.bots) {
+          if (b.accountId === a.id && b.symbol) marketSymbols.add(b.symbol);
+        }
+      }
+    }
+  }
+
+  // Connect shared CoinSwitch market-data socket (Order Book, Candlestick, Trades) if any symbols exist.
+  const csAdapter = accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL') ? getRealAdapter(accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL')!) : undefined;
+  if (csAdapter && marketSymbols.size > 0 && !csAdapter.isMarketDataConnected?.()) {
+    try {
+      await csAdapter.connectMarketDataSocket!([...marketSymbols]);
+      console.log(`[stream] connected CoinSwitch market-data socket for ${marketSymbols.size} symbols`);
+    } catch (err) {
+      console.warn(`[stream] failed to connect CoinSwitch market-data socket:`, (err as Error).message);
     }
   }
 
@@ -2315,10 +2532,6 @@ async function startServer() {
   startPriceFeed();
   setInterval(releaseFinishedBotSymbols, 5000).unref();
   // Containers (Render/Docker) must listen on all interfaces; local dev stays on loopback
-  const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
-  if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !API_TOKEN) {
-    throw new Error('Refusing to start on a non-loopback address without API_TOKEN set. The trading API would be unauthenticated.');
-  }
   const server = app.listen(PORT, HOST, () => {
     console.log(`QuantaCrypto Terminal running at http://${HOST}:${PORT}`);
   });
@@ -2326,18 +2539,57 @@ async function startServer() {
   const wss = new WebSocketServer({
     server,
     path: '/ws',
-    maxPayload: 16 * 1024, // subscribe messages are tiny; refuse anything big
-    // The /api auth middleware does not cover upgrades, so check the token here (?token=...).
+    maxPayload: 16 * 1024,
+    // The /api auth middleware does not cover upgrades. The browser can't set headers on a WebSocket, so the
+    // token rides in the Sec-WebSocket-Protocol header as `auth.<base64url>` (not in the URL, which proxies log).
     verifyClient: (info, done) => {
       if (!API_TOKEN) return done(true);
-      const token = new URL(info.req.url || '', 'http://x').searchParams.get('token') || '';
+      const offered = String(info.req.headers['sec-websocket-protocol'] || '').split(',').map((p) => p.trim());
+      const enc = offered.find((p) => p.startsWith('auth.'));
+      let token = '';
+      try { token = enc ? Buffer.from(enc.slice(5), 'base64url').toString('utf8') : ''; } catch { /* bad encoding */ }
       return tokenOk(token) ? done(true) : done(false, 401, 'Unauthorized');
     },
+    // Echo a non-secret protocol so browsers that offered subprotocols accept the handshake.
+    handleProtocols: (protocols) => (protocols.has('quanta.v1') ? 'quanta.v1' : false),
   });
+
+  // Graceful shutdown: close WebSockets, price feed, and HTTP server on SIGINT/SIGTERM
+  // so tsx watch can restart the server without port conflicts.
+  function shutdown(sig: string) {
+    console.log(`[shutdown] ${sig} received, closing server…`);
+    try { wss.close(); } catch {}
+    wsClients.forEach((ws) => { try { ws.close(1001, 'Server shutting down'); } catch {} });
+    wsClients.clear();
+    try { stopPriceFeed(); } catch {}
+    // Disconnect all CoinSwitch user-stream sockets.
+    for (const [acctId, adapter] of realAdapters) {
+      try { adapter.disconnectUserStream?.(acctId); } catch {}
+      if (adapter.broker === 'coinswitch') { try { adapter.disconnectBalanceStream?.(acctId); } catch {} }
+    }
+    // Disconnect shared CoinSwitch market-data socket.
+    for (const adapter of realAdapters.values()) {
+      if (adapter.broker === 'coinswitch') { try { adapter.disconnectMarketDataSocket?.(); } catch {}; break; }
+    }
+    stopCandleSocket();
+    server.close(() => {
+      console.log('[shutdown] server closed');
+      process.exit(0);
+    });
+    // Force exit if graceful close hangs.
+    setTimeout(() => {
+      console.warn('[shutdown] forced exit');
+      process.exit(1);
+    }, 3000).unref?.();
+  }
+  for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => shutdown(sig));
+
 
   wss.on('connection', (ws: WebSocket) => {
     if (wsClients.size >= MAX_WS_CLIENTS) { ws.close(1013, 'Server busy'); return; }
     wsClients.add(ws);
+    // Symbols THIS client asked for, so one tab unsubscribing doesn't cut the feed for the others.
+    const mySymbols = new Set<string>();
 
     ws.send(JSON.stringify({
       type: 'snapshot',
@@ -2345,10 +2597,18 @@ async function startServer() {
       count: getCachedTop100().length,
     }));
 
+    // Stop streaming a symbol only when no other client still wants it (bots keep their own hold on it).
+    const dropIfUnused = (sym: string) => {
+      for (const c of wsClients) if ((c as any).__syms?.has(sym)) return;
+      subscribedSymbols.delete(sym);
+    };
+    (ws as any).__syms = mySymbols;
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string);
         if (msg.type === 'subscribe' && typeof msg.symbol === 'string' && WS_SYMBOL_RE.test(msg.symbol.toUpperCase())) {
+          mySymbols.add(msg.symbol.toUpperCase());
           subscribedSymbols.add(msg.symbol.toUpperCase());
           ensureBinanceWs(msg.symbol.toUpperCase());
           ws.send(JSON.stringify({
@@ -2358,6 +2618,7 @@ async function startServer() {
         } else if (msg.type === 'subscribe_batch' && Array.isArray(msg.symbols)) {
           for (const sym of msg.symbols.slice(0, MAX_WS_SYMBOLS)) {
             if (typeof sym !== 'string' || !WS_SYMBOL_RE.test(sym.toUpperCase())) continue;
+            mySymbols.add(sym.toUpperCase());
             subscribedSymbols.add(sym.toUpperCase());
             ensureBinanceWs(sym.toUpperCase());
           }
@@ -2365,8 +2626,31 @@ async function startServer() {
             type: 'subscribed_batch',
             count: msg.symbols.length,
           }));
-        } else if (msg.type === 'unsubscribe' && msg.symbol) {
-          subscribedSymbols.delete(msg.symbol.toUpperCase());
+        } else if (msg.type === 'unsubscribe' && typeof msg.symbol === 'string') {
+          const sym = msg.symbol.toUpperCase();
+          mySymbols.delete(sym);
+          dropIfUnused(sym);
+        } else if (msg.type === 'subscribe_candle' && typeof msg.symbol === 'string' && WS_SYMBOL_RE.test(msg.symbol.toUpperCase())) {
+          const pair = toCoinSwitchSymbol(msg.symbol.toUpperCase()).replace('/', ',');
+          candleSubscribedSymbols.add(pair);
+          void ensureCandleSocket([...candleSubscribedSymbols]).catch((err) => {
+            console.error('[candle] subscribe failed:', (err as Error).message);
+          });
+          ws.send(JSON.stringify({
+            type: 'candle_subscribed',
+            symbol: msg.symbol.toUpperCase(),
+            pair,
+          }));
+        } else if (msg.type === 'unsubscribe_candle' && typeof msg.symbol === 'string') {
+          const pair = toCoinSwitchSymbol(msg.symbol.toUpperCase()).replace('/', ',');
+          candleSubscribedSymbols.delete(pair);
+          if (candleSubscribedSymbols.size === 0) {
+            stopCandleSocket();
+          }
+          ws.send(JSON.stringify({
+            type: 'candle_unsubscribed',
+            symbol: msg.symbol.toUpperCase(),
+          }));
         }
       } catch {
         // ignore malformed client messages
@@ -2375,6 +2659,9 @@ async function startServer() {
 
     ws.onclose = () => {
       wsClients.delete(ws);
+      const syms = [...mySymbols];
+      mySymbols.clear();
+      syms.forEach(dropIfUnused);
     };
   });
 }

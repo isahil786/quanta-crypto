@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useConfirm } from '../ui/Confirm.jsx';
 import {
   ShieldCheck,
   PlusCircle,
@@ -6,15 +7,14 @@ import {
   Zap,
   CheckCircle2,
   AlertCircle,
-  RefreshCw,
 } from 'lucide-react';
 
-export default function Accounts({ accounts, onAccountsUpdated, activeAccountId, setActiveAccountId }) {
+export default function Accounts({ accounts, holdings, onAccountsUpdated, activeAccountId, setActiveAccountId }) {
+  const confirm = useConfirm();
   const [showAddModal, setShowAddModal] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [syncingId, setSyncingId] = useState(null);
 
   // Add Account Form State
   const [broker, setBroker] = useState('coinswitch');
@@ -22,7 +22,6 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [segment, setSegment] = useState('SPOT');
-  const [mode, setMode] = useState('PAPER');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleTestConnection = async (acc) => {
@@ -52,22 +51,6 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
     }
   };
 
-  const handleSyncBalance = async (acc) => {
-    setSyncingId(acc.id);
-    try {
-      const res = await fetch(`/api/accounts/${acc.id}/sync-balance`, { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Balance sync failed');
-      const notes = data.balanceSync?.notes?.join(' ') || '';
-      setNotice({ type: 'success', text: `${acc.accountName}: ${data.availableMarginUSDT} USDT available.${notes ? ' ' + notes : ''}` });
-    } catch (err) {
-      setNotice({ type: 'error', text: `${acc.accountName}: ${err.message}` });
-    } finally {
-      setSyncingId(null);
-      onAccountsUpdated?.();
-    }
-  };
-
   const handleAddAccount = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -81,7 +64,6 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
           apiKey,
           apiSecret,
           segment,
-          mode,
         }),
       });
       const data = await res.json();
@@ -89,9 +71,7 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
 
       setNotice({
         type: 'success',
-        text: data.mode === 'REAL'
-          ? `Account "${data.accountName}" connected live on ${data.broker.toUpperCase()}. ${data.balanceSync?.ok === false ? 'Balance sync failed: ' + data.balanceSync.error : data.availableMarginUSDT + ' USDT available.'}`
-          : `Account "${data.accountName}" added as a paper-trading account on ${data.broker.toUpperCase()}.`,
+        text: `Account "${data.accountName}" added as a paper-trading account on ${data.broker.toUpperCase()}.`,
       });
       setShowAddModal(false);
       setAccountName('');
@@ -110,6 +90,7 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
       setNotice({ type: 'error', text: 'At least one trading account must remain configured.' });
       return;
     }
+    if (!(await confirm({ title: 'Delete this account?', subtitle: 'Its saved keys are removed from QuantaCrypto.', rows: [['Account', name]], typeToConfirm: 'DELETE', confirmLabel: 'Delete account', live: false }))) return;
     try {
       const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
       if (res.ok) {
@@ -176,17 +157,15 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
             <span className="text-emerald-400 font-bold">Latency: {testResult.latencyMs}ms</span>
           </div>
           {testResult.message && (
-            <p className={`mt-2 font-sans text-[11px] ${testResult.verified ? 'text-emerald-300' : 'text-amber-300'}`}>{testResult.message}</p>
-          )}
-          {testResult.error && !testResult.message && (
-            <p className="mt-2 font-sans text-[11px] text-rose-300">{testResult.error}</p>
-          )}
-          {testResult.wallet?.assets?.length > 0 && (
-            <p className="mt-1 font-sans text-[11px] text-slate-300">
-              Funded assets: {testResult.wallet.assets.map((a) => `${a.asset} ${a.total}`).join(', ')}
-            </p>
+            <p className="mt-2 font-sans text-[11px] text-amber-300">{testResult.message}</p>
           )}
           <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <span className="text-slate-500 text-[11px] font-sans font-medium">Signed header preview (redacted, not sent to the exchange):</span>
+              <pre className="mt-1 p-2 bg-slate-950 rounded border border-slate-800 text-[10px] text-slate-300 overflow-x-auto">
+                {JSON.stringify(testResult.generatedHeaders, null, 2)}
+              </pre>
+            </div>
             <div>
               <span className="text-slate-500 text-[11px] font-sans font-medium">Exchange Feature Support:</span>
               <pre className="mt-1 p-2 bg-slate-950 rounded border border-slate-800 text-[10px] text-cyan-300 overflow-x-auto">
@@ -247,29 +226,25 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
                     </span>
                   </div>
                   <div className="flex justify-between text-slate-400">
-                    <span>Mode:</span>
-                    <span className={`font-mono font-bold ${acc.mode === 'REAL' ? 'text-amber-400' : 'text-slate-300'}`}>{acc.mode || 'PAPER'}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>{acc.mode === 'REAL' ? 'USDT balance:' : 'Paper USDT balance:'}</span>
+                    <span>Equity / Balance:</span>
                     <span className="font-mono font-bold text-emerald-400">
-                      {Number(acc.totalEquityUSDT || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT
+                      ${acc.totalEquityUSDT?.toLocaleString()} USDT
                     </span>
                   </div>
-                  {acc.mode === 'REAL' && acc.balanceSync?.ok && (
-                    <div className="flex justify-between text-slate-400">
-                      <span>INR balance:</span>
-                      <span className="font-mono font-bold text-emerald-400">
-                        ₹{Number(acc.inrBalance || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-                  {acc.mode === 'REAL' && acc.balanceSync && (
-                    <div className={`text-[11px] leading-snug ${acc.balanceSync.ok ? 'text-slate-500' : 'text-rose-400'}`}>
-                      {acc.balanceSync.ok
-                        ? <>Synced {new Date(acc.balanceSync.at).toLocaleTimeString()}{acc.balanceSync.notes?.length ? ` · ${acc.balanceSync.notes.join(' ')}` : ''}<br />Exchange returned {acc.balanceSync.rowCount ?? 0} row(s): {acc.balanceSync.returned?.length ? acc.balanceSync.returned.join(', ') : 'none'}</>
-                        : <>Balance sync failed: {acc.balanceSync.error}</>}
-                    </div>
+                  {acc.broker === 'coinswitch' && (
+                    <>
+                      {holdings
+                        .filter((h) => h.accountId === acc.id && h.asset === 'INR')
+                        .map((h) => (
+                          <div key="inr" className="flex justify-between text-slate-400 mt-1">
+                            <span>INR Wallet:</span>
+                            <span className="font-mono text-slate-300">
+                              {h.free?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} INR
+                              {h.valueUSDT ? ` · ≈ $${h.valueUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                    </>
                   )}
                 </div>
 
@@ -297,27 +272,14 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
 
               {/* Action Buttons */}
               <div className="mt-5 pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleTestConnection(acc)}
                   disabled={isTesting}
-                  className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg flex items-center gap-1.5 transition-colors"
                 >
                   <Zap className="w-3 h-3 text-emerald-400" />
-                  <span>{isTesting ? 'Testing…' : 'Test Connection'}</span>
+                  <span>Test Connection</span>
                 </button>
-                {acc.mode === 'REAL' && (
-                  <button
-                    onClick={() => handleSyncBalance(acc)}
-                    disabled={syncingId === acc.id}
-                    className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
-                    title="Re-read the wallet from the exchange"
-                  >
-                    <RefreshCw className={`w-3 h-3 text-cyan-400 ${syncingId === acc.id ? 'animate-spin' : ''}`} />
-                    <span>Sync</span>
-                  </button>
-                )}
-                </div>
 
                 <div className="flex items-center gap-2">
                   {!isCurrentActive ? (
@@ -391,18 +353,7 @@ export default function Accounts({ accounts, onAccountsUpdated, activeAccountId,
                   className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white mt-1 focus:outline-none focus:border-emerald-500"
                 >
                   <option value="SPOT">SPOT (Physical crypto holdings)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-[11px] text-slate-400 font-medium">Mode</label>
-                <select
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white mt-1 focus:outline-none focus:border-emerald-500"
-                >
-                  <option value="PAPER">PAPER (simulated 10,000 USDT)</option>
-                  <option value="REAL">REAL (reads the live exchange wallet, trades with real funds)</option>
+                  <option value="FUTURES">FUTURES / PERPETUALS (Leverage & Margining)</option>
                 </select>
               </div>
 

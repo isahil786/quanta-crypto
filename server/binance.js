@@ -4,6 +4,8 @@ import {
   getLiveRecentTrades as okxTrades,
   getLiveKlines as okxKlines,
 } from './okx.js';
+import { accounts } from './state.js';
+import { signCoinSwitchAuth } from './execution/coinswitch.js';
 
 // Live Binance Market Data Engine
 // Pulls live 24hr tickers, live orderbook depth, and live trades for Top 100 Momentum Coins
@@ -175,7 +177,16 @@ export function startPriceFeed() {
       console.warn('[WS] No ticker update for 15s, marking feed stale');
       if (ws) { ws.close(); ws = null; scheduleReconnect(); }
     }
-  }, 5000);
+  }, 5000).unref?.();
+}
+
+/** Stop the Binance WebSocket feed (for clean process exit on restart). */
+export function stopPriceFeed() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (ws) { try { ws.close(); } catch {}; ws = null; }
+  wsIndex.clear();
+  wsSubscriptions.clear();
+  wsLastUpdate = 0;
 }
 
 /** Get live price index from WebSocket (primary) with REST fallback. */
@@ -561,3 +572,54 @@ export async function getLiveKlines(symbol = 'BTCUSDT', interval = '1h', limit =
 }
 
 // No futures funding in spot-only mode
+
+// ---------------------------------------------------------------------------
+// INR -> USDT conversion rate (fetched from CoinSwitch public ticker)
+// CoinSwitch spot wallets can hold INR; this lets us value INR balances in USDT
+// so the account equity and order placement reflect real purchasing power.
+// ---------------------------------------------------------------------------
+let inrUsdtRateCache = { rate: null, ts: 0 };
+const INR_USDT_RATE_TTL_MS = 60_000;
+
+export async function getInrUsdtRate() {
+  const now = Date.now();
+  if (inrUsdtRateCache.rate && now - inrUsdtRateCache.ts < INR_USDT_RATE_TTL_MS) {
+    return inrUsdtRateCache.rate;
+  }
+  try {
+    // Find a CoinSwitch REAL account to authenticate the public ticker request
+    const csAccount = accounts.find((a) => a.broker === 'coinswitch' && a.mode === 'REAL' && a.apiKey && a.apiSecret);
+    let headers = {};
+    let signedPath = '/trade/api/v2/24hr/all-pairs/ticker';
+    let querySuffix = '?exchange=coinswitchx';
+    if (csAccount) {
+      const { headers: authHeaders, path } = signCoinSwitchAuth(csAccount.apiKey, csAccount.apiSecret, 'GET', '/trade/api/v2/24hr/all-pairs/ticker', { exchange: 'coinswitchx' });
+      headers = authHeaders;
+      signedPath = path;
+      querySuffix = '';
+    }
+    const res = await fetch(`https://coinswitch.co${signedPath}${querySuffix}`, {
+      signal: AbortSignal.timeout(5000),
+      headers,
+    });
+    if (!res.ok) throw new Error(`CoinSwitch tickers HTTP ${res.status}`);
+    const data = await res.json();
+    const pairs = (data && data.data) ? data.data : (Array.isArray(data) ? data : {});
+    const pair = Object.entries(pairs).find(([, p]) => {
+      const s = String(p.symbol || p.instrument || '').toUpperCase();
+      return s === 'USDT/INR';
+    });
+    if (pair) {
+      const [, p] = pair;
+      const rate = Number(p.lastPrice ?? p.lastTradedPrice ?? p.price);
+      if (Number.isFinite(rate) && rate > 0) {
+        inrUsdtRateCache = { rate, ts: now };
+        return rate;
+      }
+    }
+    throw new Error('USDT/INR pair not found in CoinSwitch tickers');
+  } catch (err) {
+    console.warn('[currency] failed to fetch INR/USDT rate from CoinSwitch:', err.message);
+    return null;
+  }
+}

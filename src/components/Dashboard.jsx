@@ -1,37 +1,56 @@
 import React, { useState, useEffect } from 'react';
 import {
-  AlertCircle,
-  CheckCircle2,
-  Sliders,
   Clock,
   Zap,
   Search,
   Flame,
 } from 'lucide-react';
+import { useToast } from '../ui/Toast.jsx';
+import ConfirmSheet from '../ui/ConfirmSheet.jsx';
+import PriceChart from '../ui/PriceChart.jsx';
+import PriceCell from '../ui/PriceCell.jsx';
+import PositionsDock from '../ui/PositionsDock.jsx';
+import PriceLadder from '../ui/PriceLadder.jsx';
+
+import { visibleInterval } from '../ui/visibleInterval.js';
+// Live orders worth more than this (USD) also need a typed confirmation.
+const TYPED_CONFIRM_ABOVE_USD = 5000;
+
+// Header stats: show a dash, never "$undefined", while the feed has not delivered a value yet.
+const money = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? `$${Number(n).toLocaleString()}` : '—');
+const compactUsd = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '—';
+  return v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v).toLocaleString()}`;
+};
 
 export default function Dashboard({
   accounts,
   activeAccountId,
   tickers,
   selectedSymbol,
+  candles,
   setSelectedSymbol,
   onOrderPlaced,
 }) {
   const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
   const broker = activeAccount?.broker || 'coinswitch';
-  const isCoinSwitchSpot = broker === 'coinswitch' && activeAccount?.segment === 'SPOT';
+  const segment = activeAccount?.segment;
+  const isCoinSwitchSpot = broker === 'coinswitch' && segment === 'SPOT';
+  const toast = useToast();
+  const isLive = activeAccount?.mode === 'REAL';
+  const [pendingOrder, setPendingOrder] = useState(null);
 
   // Selected pair (from live Binance top 100)
-  const currentPair = tickers.find((t) => t.symbol === selectedSymbol) || tickers[0] || {
-    symbol: 'BTCUSDT',
-    base: 'BTC',
-    price: 76000.0,
-    change24h: 2.1,
-    high24h: 76500.0,
-    low24h: 74200.0,
-    volume24h: '2.1B',
+  // Never substitute another coin (or a made-up price) when the selected pair is missing from the ticker list:
+  // the chart and order ticket must follow the symbol the user picked.
+  const wantedSymbol = selectedSymbol || tickers[0]?.symbol || 'BTCUSDT';
+  const currentPair = tickers.find((t) => t.symbol === wantedSymbol) || {
+    symbol: wantedSymbol,
+    base: wantedSymbol.replace(/USDT$/, ''),
+    price: 0,
+    change24h: 0,
     precision: 2,
-    momentumRank: 1,
   };
 
   // Search filter for top 100 ribbon
@@ -42,12 +61,11 @@ export default function Dashboard({
   const [orderType, setOrderType] = useState('LIMIT');
   const [price, setPrice] = useState(currentPair.price.toString());
   const [size, setSize] = useState('0.1');
-  const [leverage, setLeverage] = useState(broker === 'delta' ? 10 : 1);
+  // Spot only: the server rejects any leverage other than 1, so the ticket never offers it.
   const [enableTpSl, setEnableTpSl] = useState(false);
   const [tpPrice, setTpPrice] = useState('');
   const [slPrice, setSlPrice] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [notice, setNotice] = useState(null);
 
   // Depth Data State (Live from Binance)
   const [depth, setDepth] = useState({ bids: [], asks: [], spread: 0, spreadPercent: 0 });
@@ -63,7 +81,7 @@ export default function Dashboard({
     if (currentPair?.price) {
       setPrice(currentPair.price.toString());
     }
-  }, [currentPair?.symbol]);
+  }, [currentPair?.symbol, currentPair?.price > 0]);
 
   // Fetch live orderbook depth from Binance
   useEffect(() => {
@@ -81,7 +99,7 @@ export default function Dashboard({
     };
 
     fetchDepth();
-    const interval = setInterval(fetchDepth, 2000);
+    const interval = visibleInterval(fetchDepth, 2000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -104,7 +122,7 @@ export default function Dashboard({
     };
 
     fetchTrades();
-    const interval = setInterval(fetchTrades, 3000);
+    const interval = visibleInterval(fetchTrades, 3000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -115,34 +133,57 @@ export default function Dashboard({
   const numericPrice = orderType === 'MARKET' ? currentPair.price : Number(price) || currentPair.price;
   const numericSize = Number(size) || 0;
   const orderValue = numericPrice * numericSize;
-  const estimatedMargin = leverage > 1 ? orderValue / leverage : orderValue;
+  const estimatedMargin = orderValue;
   const estimatedFee = orderValue * (broker === 'delta' ? 0.0005 : 0.001);
 
   // Quick percent size
   const handlePercentSize = (percent) => {
-    const available = activeAccount?.availableMarginUSDT || 10000;
+    const available = Number(activeAccount?.availableMarginUSDT) || 0; // never size against an invented balance
     const alloc = (available * percent) / 100;
-    const calculatedSize = (alloc * (leverage || 1)) / (numericPrice || 1);
+    const calculatedSize = alloc / (numericPrice || 1);
     setSize(calculatedSize.toFixed(calculatedSize < 1 ? 4 : 2));
   };
 
   // Submit Order
-  const handleSubmitOrder = async (e) => {
+  // Click a book level to prefill the ticket as a limit order at that price. Never sends anything itself;
+  // live orders still go through the confirm sheet.
+  const fillTicketFromBook = (nextSide, px) => {
+    setSide(nextSide);
+    setOrderType('LIMIT');
+    setPrice(String(px));
+  };
+
+  // Paper accounts send straight away. Live accounts open the confirm sheet first.
+  const handleSubmitOrder = (e) => {
     e.preventDefault();
+    if (activeAccount?.mode !== 'REAL') { submitOrder(); return; }
+    const px = orderType === 'MARKET' ? currentPair.price : Number(price);
+    const value = Number(size) * px;
+    setPendingOrder({ px, value });
+  };
+
+  // override: { side, orderType, price, size } from the ladder; otherwise the ticket fields are used.
+  // Ladder entry point. Paper sends at once; live always opens the confirm sheet first.
+  const requestOrder = (o) => {
+    if (!isLive) { submitOrder(o); return; }
+    setPendingOrder({ px: o.price, value: o.size * o.price, order: o });
+  };
+
+  const submitOrder = async (override) => {
+    const o = override || { side, orderType, price: orderType === 'MARKET' ? currentPair.price : Number(price), size: Number(size) };
     setIsSubmitting(true);
-    setNotice(null);
 
     try {
       const payload = {
         accountId: activeAccount.id,
         symbol: currentPair.symbol,
-        side,
-        orderType,
-        price: orderType === 'MARKET' ? currentPair.price : Number(price),
-        size: Number(size),
-        leverage: isCoinSwitchSpot ? 1 : Number(leverage),
-        tpPrice: enableTpSl && tpPrice ? Number(tpPrice) : undefined,
-        slPrice: enableTpSl && slPrice ? Number(slPrice) : undefined,
+        side: o.side,
+        orderType: o.orderType,
+        price: o.orderType === 'MARKET' ? currentPair.price : o.price,
+        size: o.size,
+        leverage: 1,
+        tpPrice: !override && enableTpSl && tpPrice ? Number(tpPrice) : undefined,
+        slPrice: !override && enableTpSl && slPrice ? Number(slPrice) : undefined,
       };
 
       const res = await fetch('/api/orders', {
@@ -151,23 +192,19 @@ export default function Dashboard({
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      // A proxy error page is not JSON; do not show the user "Unexpected token <"
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to place order');
+        throw new Error(data.error || `Failed to place order (HTTP ${res.status})`);
       }
 
-      setNotice({
-        type: 'success',
-        text: `Order #${data.id} placed on ${activeAccount.accountName} @ $${data.price}! Status: ${data.status}`,
-      });
-
+      toast('success', `Order #${data.id} ${String(data.status || 'placed').toLowerCase()}`, `${o.side} ${o.size} ${currentPair.symbol} @ ${data.price}`);
+      setPendingOrder(null);
       if (onOrderPlaced) onOrderPlaced();
     } catch (err) {
-      setNotice({
-        type: 'error',
-        text: err.message,
-      });
+      toast('error', 'Order rejected', err.message);
+      setPendingOrder(null);
     } finally {
       setIsSubmitting(false);
     }
@@ -182,125 +219,81 @@ export default function Dashboard({
 
   return (
     <div className="flex flex-col gap-5">
-      {/* 1. Live Top 100 Momentum Ribbon (Binance Live Feed) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
-        <div className="flex items-center justify-between text-xs px-1">
-          <div className="flex items-center gap-2">
-            <Flame className="w-3.5 h-3.5 text-amber-400" />
-            <span className="font-bold text-white tracking-tight">Top 100 Momentum Coins</span>
-            <span className="text-[11px] text-slate-500 font-mono">
-              Live Binance Feed · {tickers.length} active pairs
-            </span>
-          </div>
-
-          <div className="relative">
-            <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-2" />
-            <input
-              type="text"
-              placeholder="Search coin..."
-              value={tickerSearch}
-              onChange={(e) => setTickerSearch(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-md pl-7 pr-2.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500 w-36"
-            />
-          </div>
-        </div>
-
-        {/* Scrollable Ribbon */}
-        <div className="overflow-x-auto scrollbar-none flex items-center gap-2 py-1">
+      {/* Movers strip: one line of top coins plus search */}
+      <div className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2">
+        <Flame className="size-4 shrink-0 text-live" aria-hidden />
+        <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
           {visibleTickers.slice(0, 30).map((t) => {
             const isSelected = t.symbol === currentPair.symbol;
-            const isPositive = t.change24h >= 0;
+            const up = t.change24h >= 0;
             return (
               <button
                 key={t.symbol}
                 onClick={() => setSelectedSymbol(t.symbol)}
-                className={`flex items-center gap-2.5 px-3 py-1.5 rounded-lg transition-all text-left shrink-0 ${
-                  isSelected
-                    ? 'bg-slate-800 border border-emerald-500/40 shadow-sm'
-                    : 'bg-slate-950/60 hover:bg-slate-800/50 border border-slate-800/80'
-                }`}
+                aria-pressed={isSelected}
+                className={`flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-1 font-mono text-xs ${isSelected ? 'bg-raised text-ink ring-1 ring-accent' : 'text-muted hover:bg-raised/60 hover:text-ink'}`}
               >
-                <span className="text-[10px] font-mono font-bold text-slate-500">#{t.momentumRank}</span>
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1">
-                    <span>{t.symbol}</span>
-                  </div>
-                  <div className="text-[11px] text-slate-300 font-mono tabular-nums">
-                    ${t.price < 0.01 ? t.price.toFixed(6) : t.price.toLocaleString(undefined, { minimumFractionDigits: t.precision })}
-                  </div>
-                </div>
-                <div className={`text-xs font-mono font-bold flex items-center gap-0.5 tabular-nums ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {isPositive ? '+' : ''}{t.change24h}%
-                </div>
+                <span className="font-sans font-semibold">{t.symbol.replace('USDT', '')}</span>
+                <span className={up ? 'text-up' : 'text-down'}>{up ? '▲ +' : '▼ '}{t.change24h}%</span>
               </button>
             );
           })}
         </div>
+        <div className="relative shrink-0">
+          <Search className="absolute left-2.5 top-2 size-3 text-muted" aria-hidden />
+          <input
+            type="text"
+            aria-label="Search coin"
+            placeholder="Search coin"
+            value={tickerSearch}
+            onChange={(e) => setTickerSearch(e.target.value)}
+            className="w-32 rounded-lg border border-line bg-canvas py-1 pl-7 pr-2 text-xs text-ink"
+          />
+        </div>
       </div>
 
-      {/* 2. Pair Header & Exchange Capability Notice */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 rounded-xl px-5 py-3.5">
-        <div className="flex items-center gap-4 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 font-mono">
-                Momentum Rank #{currentPair.momentumRank || 1}
-              </span>
-              <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-                <span>{currentPair.symbol}</span>
-                <span className="text-xs text-slate-400 font-normal">Live Binance Stream</span>
-              </h1>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-slate-400 mt-1">
-              <span>24h High: <strong className="text-slate-200 font-mono tabular-nums">${currentPair.high24h?.toLocaleString()}</strong></span>
-              <span>·</span>
-              <span>24h Low: <strong className="text-slate-200 font-mono tabular-nums">${currentPair.low24h?.toLocaleString()}</strong></span>
-              <span>·</span>
-              <span>24h Vol: <strong className="text-emerald-400 font-mono tabular-nums">${currentPair.volume24h}</strong></span>
-              <span>·</span>
-              <span>Trades: <strong className="text-slate-300 font-mono tabular-nums">{currentPair.tradesCount?.toLocaleString()}</strong></span>
-            </div>
-          </div>
-        </div>
-
-        {/* Dynamic Capability Notice */}
-        <div className="text-xs flex items-center gap-2 bg-slate-950/70 border border-slate-800 px-3 py-1.5 rounded-lg text-slate-300">
-          <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>
-            {isCoinSwitchSpot && (
-              <>CoinSwitch Spot: <strong className="text-amber-300">Market & Limit orders with TP/SL</strong>. Mirror Trading copies master orders to live replicas with the same type (MARKET stays MARKET, LIMIT stays LIMIT).</>
-            )}
-            {broker === 'delta' && (
-              <>Delta Exchange: <strong className="text-cyan-300">Bracket & TP/SL orders</strong>, 100x leverage enabled.</>
-            )}
-            {broker === 'coindcx' && (
-              <>CoinDCX Prime: <strong className="text-blue-300">Target & Stop-loss edit</strong>, 20x margin enabled.</>
-            )}
+      {/* One pair header: symbol, price, change, 24h stats. Broker notes live in the info tooltip. */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-line bg-surface px-4 py-3">
+        <h1 className="flex items-center gap-2 text-lg font-semibold text-ink">
+          {currentPair.symbol}
+          <span
+            tabIndex={0}
+            role="img"
+            aria-label="Exchange notes"
+            title={
+              isCoinSwitchSpot ? 'CoinSwitch Spot: Market & Limit orders with TP/SL. Mirror Trading copies master orders to replicas.'
+                : broker === 'delta' ? 'Delta Exchange India: spot orders. Leverage is not supported.'
+                : broker === 'coindcx' ? 'CoinDCX Prime: spot orders. Margin is not supported.' : ''
+            }
+            className="grid size-5 cursor-help place-items-center rounded-full border border-line text-[11px] text-muted"
+          >
+            i
           </span>
-        </div>
+        </h1>
+        {currentPair.price > 0
+          ? <PriceCell value={currentPair.price} decimals={currentPair.precision ?? 2} className="text-2xl font-semibold" />
+          : <span className="font-mono text-2xl font-semibold text-muted">—</span>}
+        <span className={`rounded-lg px-2 py-0.5 font-mono text-sm font-semibold ${currentPair.change24h >= 0 ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>
+          {currentPair.change24h >= 0 ? '▲ +' : '▼ '}{currentPair.change24h}%
+        </span>
+        <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+          {[
+            ['24h high', money(currentPair.high24h)],
+            ['24h low', money(currentPair.low24h)],
+            ['24h volume', compactUsd(currentPair.quoteVolume)],
+            ['Trades', Number.isFinite(Number(currentPair.tradesCount)) && currentPair.tradesCount > 0 ? Number(currentPair.tradesCount).toLocaleString() : '—'],
+          ].map(([k, v]) => (
+            <div key={k}><dt className="text-muted">{k}</dt><dd className="font-mono text-sm text-ink">{v}</dd></div>
+          ))}
+        </dl>
       </div>
-
-      {/* Notice alert */}
-      {notice && (
-        <div
-          className={`px-4 py-3 rounded-lg text-xs flex items-center justify-between border ${
-            notice.type === 'success'
-              ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800'
-              : 'bg-rose-950/40 text-rose-300 border-rose-800'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {notice.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
-            <span>{notice.text}</span>
-          </div>
-          <button onClick={() => setNotice(null)} className="text-slate-400 hover:text-white">✕</button>
-        </div>
-      )}
 
       {/* 3. Terminal Grid: Orderbook Depth + Fast Order Ticket */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Chart (left), ticket (right, full height), book under the chart */}
+        <PriceChart symbol={currentPair.symbol} livePrice={currentPair.price} broker={broker} segment={segment} candleData={candles[wantedSymbol]} className="lg:col-span-8" height={400} />
         {/* Left Column: Live Order Book & Real-Time Trades (7 Cols) */}
-        <div className="lg:col-span-7 bg-slate-900/80 border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+        <div className="lg:col-span-8 lg:col-start-1 bg-slate-900/80 border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 text-xs font-semibold text-slate-300">
               <div className="flex items-center gap-2">
@@ -339,7 +332,12 @@ export default function Dashboard({
                 {/* Asks (Sells) */}
                 <div className="flex flex-col gap-0.5 py-1 font-mono text-xs tabular-nums">
                   {depth.asks?.slice(0, 6).map((ask, idx) => (
-                    <div key={`ask-${idx}`} className="grid grid-cols-3 relative py-0.5 text-rose-400 items-center">
+                    <button
+                      type="button"
+                      key={`ask-${idx}`}
+                      onClick={() => fillTicketFromBook('SELL', ask.price)}
+                      title="Click to fill the order ticket at this price. Nothing is sent until you place the order."
+                      className="grid w-full grid-cols-3 relative py-0.5 text-left text-rose-400 items-center rounded hover:bg-raised">
                       <div
                         className="absolute right-0 top-0 bottom-0 bg-rose-500/10 pointer-events-none rounded"
                         style={{ width: `${Math.min((ask.total / (depth.asks[0]?.total || 10)) * 100, 100)}%` }}
@@ -347,7 +345,7 @@ export default function Dashboard({
                       <span className="font-semibold">${ask.price < 0.01 ? ask.price.toFixed(6) : ask.price.toLocaleString(undefined, { minimumFractionDigits: currentPair.precision })}</span>
                       <span className="text-right text-slate-300">{ask.size.toFixed(4)}</span>
                       <span className="text-right text-slate-400">{ask.total.toFixed(4)}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
 
@@ -369,7 +367,12 @@ export default function Dashboard({
                 {/* Bids (Buys) */}
                 <div className="flex flex-col gap-0.5 py-1 font-mono text-xs tabular-nums">
                   {depth.bids?.slice(0, 6).map((bid, idx) => (
-                    <div key={`bid-${idx}`} className="grid grid-cols-3 relative py-0.5 text-emerald-400 items-center">
+                    <button
+                      type="button"
+                      key={`bid-${idx}`}
+                      onClick={() => fillTicketFromBook('BUY', bid.price)}
+                      title="Click to fill the order ticket at this price. Nothing is sent until you place the order."
+                      className="grid w-full grid-cols-3 relative py-0.5 text-left text-emerald-400 items-center rounded hover:bg-raised">
                       <div
                         className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 pointer-events-none rounded"
                         style={{ width: `${Math.min((bid.total / (depth.bids[depth.bids.length - 1]?.total || 10)) * 100, 100)}%` }}
@@ -377,7 +380,7 @@ export default function Dashboard({
                       <span className="font-semibold">${bid.price < 0.01 ? bid.price.toFixed(6) : bid.price.toLocaleString(undefined, { minimumFractionDigits: currentPair.precision })}</span>
                       <span className="text-right text-slate-300">{bid.size.toFixed(4)}</span>
                       <span className="text-right text-slate-400">{bid.total.toFixed(4)}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -416,8 +419,18 @@ export default function Dashboard({
           </div>
         </div>
 
+        <PriceLadder
+          key={`${activeAccountId}-${currentPair.symbol}`}
+          depth={depth}
+          price={currentPair.price}
+          precision={currentPair.precision}
+          isLive={isLive}
+          onOrder={requestOrder}
+          className="lg:col-span-8 lg:col-start-1"
+        />
+
         {/* Right Column: Fast Order Ticket (5 Cols) */}
-        <div className="lg:col-span-5 bg-slate-900/80 border border-slate-800 rounded-xl p-5 flex flex-col justify-between">
+        <div className={`lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2 bg-slate-900/80 border ${isLive ? 'border-live/60' : 'border-slate-800'} rounded-xl p-5 flex flex-col justify-between`}>
           <form onSubmit={handleSubmitOrder} className="flex flex-col gap-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="text-xs font-semibold text-white flex items-center gap-1.5">
@@ -425,7 +438,7 @@ export default function Dashboard({
                 <span>Trade {currentPair.symbol}</span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
-                Avail: ${activeAccount?.availableMarginUSDT?.toLocaleString() || '10,000'} USDT
+                Avail: ${Number(activeAccount?.availableMarginUSDT ?? 0).toLocaleString()} USDT
               </div>
             </div>
 
@@ -440,7 +453,7 @@ export default function Dashboard({
                     : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20'
                 }`}
               >
-                BUY / LONG
+                BUY
               </button>
               <button
                 type="button"
@@ -451,7 +464,7 @@ export default function Dashboard({
                     : 'bg-rose-500/10 text-rose-400 border-rose-500/25 hover:bg-rose-500/20'
                 }`}
               >
-                SELL / SHORT
+                SELL
               </button>
             </div>
 
@@ -481,34 +494,6 @@ export default function Dashboard({
                 Market
               </button>
             </div>
-
-            {/* Leverage Slider */}
-            {!isCoinSwitchSpot && (
-              <div className="flex flex-col gap-1.5 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span className="flex items-center gap-1">
-                    <Sliders className="w-3 h-3" />
-                    Leverage Margin
-                  </span>
-                  <span className="text-emerald-400 font-mono font-bold">{leverage}x</span>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max={broker === 'delta' ? '100' : '20'}
-                  step="1"
-                  value={leverage}
-                  onChange={(e) => setLeverage(Number(e.target.value))}
-                  className="w-full accent-emerald-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
-                />
-                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>1x (Spot)</span>
-                  <span>10x</span>
-                  <span>{broker === 'delta' ? '50x' : '15x'}</span>
-                  <span>{broker === 'delta' ? '100x' : '20x'}</span>
-                </div>
-              </div>
-            )}
 
             {/* Price Input */}
             {orderType === 'LIMIT' && (
@@ -634,13 +619,38 @@ export default function Dashboard({
                 <span>Routing to {broker.toUpperCase()}...</span>
               ) : (
                 <span>
-                  {side} {currentPair.symbol} {orderType}
+                  {isLive ? `Review live order · ${side} ${currentPair.symbol}` : `${side} ${currentPair.symbol} ${orderType} (paper)`}
                 </span>
               )}
             </button>
           </form>
         </div>
       </div>
+      <PositionsDock accountId={activeAccountId} isLive={isLive} />
+      <ConfirmSheet
+        open={!!pendingOrder}
+        title="Send live order?"
+        subtitle={`This goes to ${activeAccount?.accountName} with real money.`}
+        rows={(() => {
+          const po = pendingOrder?.order;
+          const rows = [
+            ['Pair', currentPair.symbol],
+            ['Side', po ? po.side : side],
+            ['Type', po ? po.orderType : orderType],
+            ['Size', String(po ? po.size : size)],
+          ];
+          if ((po ? po.orderType : orderType) === 'LIMIT') rows.push(['Limit price', String(po ? po.price : price)]);
+          if (!po && enableTpSl && tpPrice) rows.push(['Take profit', String(tpPrice)]);
+          if (!po && enableTpSl && slPrice) rows.push(['Stop loss', String(slPrice)]);
+          rows.push(['Value', `≈ $${(pendingOrder?.value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`]);
+          return rows;
+        })()}
+        warning={pendingOrder && pendingOrder.value > TYPED_CONFIRM_ABOVE_USD ? 'This is a large order. Type the side to confirm.' : undefined}
+        typeToConfirm={pendingOrder && pendingOrder.value > TYPED_CONFIRM_ABOVE_USD ? (pendingOrder.order ? pendingOrder.order.side : side) : undefined}
+        busy={isSubmitting}
+        onConfirm={() => submitOrder(pendingOrder?.order)}
+        onCancel={() => setPendingOrder(null)}
+      />
     </div>
   );
 }

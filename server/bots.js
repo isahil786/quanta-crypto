@@ -724,6 +724,7 @@ function runOpenOrders(liveCoins) {
   // Iterate a copy: mirroring unshifts replica orders into `orders` while we loop
   for (const order of [...orders]) {
     if (order.status !== 'OPEN' || order.orderType !== 'LIMIT') continue;
+    if (order.mode === 'REAL') continue; // live orders fill on the exchange; fills arrive via the user stream
     const coin = liveCoins.get(order.symbol);
     const account = accounts.find((a) => a.id === order.accountId);
     if (!coin || !account) continue;

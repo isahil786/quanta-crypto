@@ -14,9 +14,7 @@ const VALID_SEGMENTS = new Set(['SPOT']);
 function mask(key) {
   if (!key) return 'Not configured';
   const visible = key.slice(-4);
-  const hidden = Math.max(key.length - 4, 0);
-  const asterisks = '*'.repeat(Math.min(hidden, 8));
-  return hidden > 8 ? asterisks + '…' + visible : asterisks + visible;
+  return '*'.repeat(Math.max(key.length - 4, 0)) + visible;
 }
 
 function parseSeedAccount(raw, index) {
@@ -30,10 +28,6 @@ function parseSeedAccount(raw, index) {
   if (!VALID_BROKERS.has(broker)) {
     throw new Error(`accounts.json entry #${n}: unknown broker '${raw.broker}'`);
   }
-  const mode = String(raw.mode || 'PAPER').trim().toUpperCase();
-  if (!['PAPER', 'REAL'].includes(mode)) {
-    throw new Error(`accounts.json entry #${n}: mode must be PAPER or REAL (got '${raw.mode}')`);
-  }
   const segment = String(raw.segment || 'SPOT').trim().toUpperCase();
   if (!VALID_SEGMENTS.has(segment)) {
     throw new Error(`accounts.json entry #${n}: segment must be SPOT`);
@@ -46,8 +40,7 @@ function parseSeedAccount(raw, index) {
     segment,
     exchange: String(raw.exchange || 'c2c1').trim(),
     status: String(raw.status || 'ACTIVE').toUpperCase(),
-    mode,
-    modeExplicit: raw.mode !== undefined && raw.mode !== null && String(raw.mode).trim() !== '',
+    mode: String(raw.mode || 'PAPER').toUpperCase(),
     apiKeyMasked: mask(String(raw.apiKey).trim()),
     apiKey: String(raw.apiKey).trim(),
     apiSecret: String(raw.apiSecret).trim(),
@@ -69,16 +62,6 @@ export function mergeSeedCredentials(existing, seed) {
   existing.apiSecret = seed.apiSecret;
   existing.apiKeyMasked = seed.apiKeyMasked;
   return true;
-}
-
-/** accounts.json is the source of truth for settings you edit by hand. A restored account (from state.json)
- *  must pick up a changed mode / exchange / status, otherwise switching a seed entry to REAL is silently ignored.
- *  Returns true if anything changed. */
-export function applySeedSettings(existing, seed) {
-  let changed = false;
-  if (seed.modeExplicit && existing.mode !== seed.mode) { existing.mode = seed.mode; changed = true; }
-  if (seed.exchange && existing.exchange !== seed.exchange) { existing.exchange = seed.exchange; changed = true; }
-  return changed;
 }
 
 export function loadSeedAccounts(filePath = DEFAULT_ACCOUNTS_FILE) {

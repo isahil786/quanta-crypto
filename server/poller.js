@@ -6,21 +6,37 @@ import { checkMargin, releaseOrder, reserveOrder } from './positions.js';
 import { executionCost } from './costs.js';
 import { uid } from './util.js';
 import { CoinSwitchAdapter } from './execution/coinswitch.js';
+import { BinanceAdapter } from './execution/binance.js';
+import { DeltaAdapter } from './execution/delta.js';
+import { CoindcxAdapter } from './execution/coindcx.js';
 import { getLivePriceIndex } from './binance.js';
 import { isEmergencyStopActive } from './safety.js';
 
 const POLL_INTERVAL_MS = 8000;
 let timer = null;
 let cycleRunning = false;
-const adapters = new Map();      // accountId -> CoinSwitchAdapter
+const ADAPTER_CLASSES = { coinswitch: CoinSwitchAdapter, binance: BinanceAdapter, delta: DeltaAdapter, coindcx: CoindcxAdapter };
+/** Brokers that can act as a mirror master / be reconciled. */
+export const SUPPORTED_BROKERS = new Set(Object.keys(ADAPTER_CLASSES));
+const adapters = new Map();      // accountId -> exchange adapter (shared with server.ts, one instance per account)
 const lastPolled = new Map();    // accountId -> Map<exchangeOrderId, snapshot>
 const lastPriceBySymbol = new Map(); // symbol -> last known price (fallback for MARKET->LIMIT)
 const inflightMirror = new Set();  // `${replicaId}:${masterOrderId}` currently being placed
 
+let adapterFactory = null;
+/** server.ts installs a factory so every adapter (mirroring, reconciliation, orders) is the same instance and has the fill listener attached. */
+export function setAdapterFactory(fn) { adapterFactory = fn; }
+
 function getAdapter(account) {
   let adapter = adapters.get(account.id);
+  if (!adapter && adapterFactory) {
+    adapter = adapterFactory(account);
+    if (adapter) adapters.set(account.id, adapter);
+  }
   if (!adapter) {
-    adapter = new CoinSwitchAdapter({
+    const AdapterClass = ADAPTER_CLASSES[account.broker];
+    if (!AdapterClass) throw new Error(`No execution adapter for broker ${account.broker}`);
+    adapter = new AdapterClass({
       id: account.id,
       broker: account.broker,
       apiKey: account.apiKey || '',
@@ -34,7 +50,7 @@ function getAdapter(account) {
 }
 
 function isMasterAccount(a) {
-  return Boolean(a.isMaster && a.mode === 'REAL' && a.broker === 'coinswitch' && a.status === 'ACTIVE');
+  return Boolean(a.isMaster && a.mode === 'REAL' && SUPPORTED_BROKERS.has(a.broker) && a.status === 'ACTIVE');
 }
 
 export function getMasterAccounts() {
@@ -173,7 +189,7 @@ function pushMirrorLog(entry) {
 }
 
 /** Place a real order on a replica account via the adapter, or simulate for PAPER mode. */
-async function placeReplicaOrder(replicaAcc, repOrder) {
+async function placeReplicaOrder(replicaAcc, repOrder, masterBroker = 'coinswitch') {
   if (replicaAcc.mode !== 'REAL') {
     // PAPER mode: simulate locally without touching the exchange.
     const reserved = reserveMirror(replicaAcc, repOrder);
@@ -183,10 +199,10 @@ async function placeReplicaOrder(replicaAcc, repOrder) {
     return { ok: true, reason: null, result: { orderId: repOrder.id, status: 'OPEN', filledSize: 0, fillPrice: undefined, fee: undefined, raw: null } };
   }
 
-  // Cross-broker guard: only place on CoinSwitch replicas; never send another
-  // broker's credentials to the CoinSwitch adapter.
-  if (replicaAcc.broker !== 'coinswitch' || replicaAcc.isMaster) {
-    return { ok: false, reason: 'Replica is not a CoinSwitch non-master account', result: null };
+  // Cross-broker guard: replicas must be on the master's own exchange (symbols, lot sizes and order semantics differ
+  // between brokers), and a master is never a replica.
+  if (replicaAcc.broker !== masterBroker || replicaAcc.isMaster) {
+    return { ok: false, reason: 'Replica is not a non-master account on the master\'s exchange', result: null };
   }
 
   const adapter = getAdapter(replicaAcc);
@@ -218,7 +234,7 @@ async function placeReplicaOrder(replicaAcc, repOrder) {
 }
 
 /** Cancel a real order on a replica account via the adapter, or simulate for PAPER mode. */
-async function cancelReplicaOrder(replicaAcc, repOrder) {
+async function cancelReplicaOrder(replicaAcc, repOrder, masterBroker = 'coinswitch') {
   if (replicaAcc.mode !== 'REAL') {
     releaseMirror(replicaAcc, repOrder);
     repOrder.status = 'CANCELLED';
@@ -226,11 +242,11 @@ async function cancelReplicaOrder(replicaAcc, repOrder) {
     return { ok: true, reason: null };
   }
 
-  // Cross-broker guard: only cancel on CoinSwitch replicas.
-  if (replicaAcc.broker !== 'coinswitch' || replicaAcc.isMaster) {
+  // Cross-broker guard: only cancel on replicas of the master's exchange.
+  if (replicaAcc.broker !== masterBroker || replicaAcc.isMaster) {
     releaseMirror(replicaAcc, repOrder);
     repOrder.status = 'CANCELLED';
-    repOrder.notes = (repOrder.notes || '') + ' | Mirrored cancel from master (skipped non-CoinSwitch replica)';
+    repOrder.notes = (repOrder.notes || '') + ' | Mirrored cancel from master (skipped replica on a different exchange)';
     return { ok: true, reason: null };
   }
 
@@ -268,7 +284,7 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
       inflightMirror.add(lockKey);
       try {
         const repOrder = buildMirrorOrder(replicaAcc, eo, multiplier, refPrice);
-        const placed = await placeReplicaOrder(replicaAcc, repOrder);
+        const placed = await placeReplicaOrder(replicaAcc, repOrder, master.broker);
         if (!placed.ok) {
           pushMirrorLog({
             id: uid('mlog'), timestamp: new Date().toISOString(),
@@ -302,7 +318,7 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
         repOrder.fillPrice = eo.price != null ? Number(eo.price) : repOrder.price;
         repOrder.timestamp = new Date().toISOString();
         if (replicaAcc.mode === 'REAL' && repOrder.exchangeOrderId) {
-          const cancelled = await cancelReplicaOrder(replicaAcc, repOrder);
+          const cancelled = await cancelReplicaOrder(replicaAcc, repOrder, master.broker);
           if (!cancelled.ok) {
             pushMirrorLog({
               id: uid('mlog'), timestamp: new Date().toISOString(),
@@ -324,7 +340,7 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
 
       // Resting order price/size change: CoinSwitch does not support in-place modify,
       // so cancel the existing replica order and place a replacement.
-      const cancelled = await cancelReplicaOrder(replicaAcc, repOrder);
+      const cancelled = await cancelReplicaOrder(replicaAcc, repOrder, master.broker);
       if (!cancelled.ok) {
         pushMirrorLog({
           id: uid('mlog'), timestamp: new Date().toISOString(),
@@ -351,7 +367,7 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
       replacement.id = uid('ord-replace');
       replacement.timestamp = new Date().toISOString();
       replacement.notes = `Replaced from ${repOrder.id} via cancel-and-replace on ${replicaAcc.accountName}`;
-      const placed = await placeReplicaOrder(replicaAcc, replacement);
+      const placed = await placeReplicaOrder(replicaAcc, replacement, master.broker);
       if (!placed.ok) {
         // Rollback: re-place the original order so the replica is not left order-less.
         // repOrder is already tracked in `orders`, so do not unshift again.
@@ -404,7 +420,7 @@ async function mirrorAction(master, eo, action, prevSnap, liveIndex) {
     } else if (action === 'cancel') {
       const repOrder = orders.find((o) => o.accountId === replicaAcc.id && o.mirrorsMasterOrderId === masterOrderId);
       if (!repOrder) return;
-      const cancelled = await cancelReplicaOrder(replicaAcc, repOrder);
+      const cancelled = await cancelReplicaOrder(replicaAcc, repOrder, master.broker);
       if (!cancelled.ok) {
         pushMirrorLog({
           id: uid('mlog'), timestamp: new Date().toISOString(),
@@ -445,7 +461,7 @@ function buildOrdersByExchangeId() {
 export async function mirrorMasterOrder(master, eo) {
   if (isEmergencyStopActive()) return { skipped: true, reason: 'Emergency stop is active' };
   if (!mirrorConfig.enabled) return { skipped: true, reason: 'Mirroring is disabled' };
-  if (!isMasterAccount(master)) return { skipped: true, reason: 'Not an active REAL CoinSwitch master account' };
+  if (!isMasterAccount(master)) return { skipped: true, reason: 'Not an active REAL master account on a supported exchange' };
   const status = normalizeStatus(eo.status || 'NEW');
   if (status === 'CANCELLED' || status === 'REJECTED' || status === 'EXPIRED') return { skipped: true, reason: `Master order is ${status}` };
   let liveIndex; try { liveIndex = await getLivePriceIndex(); } catch { liveIndex = null; }

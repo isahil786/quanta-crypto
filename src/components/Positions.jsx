@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useConfirm } from '../ui/Confirm.jsx';
+import DataTable from '../ui/DataTable.jsx';
 import {
   Layers,
   Wallet,
@@ -7,6 +9,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
+import { visibleInterval } from '../ui/visibleInterval.js';
 export default function Positions({ accounts, activeAccountId }) {
   const [allPositions, setPositions] = useState([]);
   const [allHoldings, setHoldings] = useState([]);
@@ -14,6 +17,7 @@ export default function Positions({ accounts, activeAccountId }) {
   const [notice, setNotice] = useState(null);
   const [scope, setScope] = useState('active'); // 'active' | 'all'
 
+  const confirm = useConfirm();
   const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
   const isCoinSwitchSpot = activeAccount?.broker === 'coinswitch' && activeAccount?.segment === 'SPOT';
 
@@ -36,7 +40,7 @@ export default function Positions({ accounts, activeAccountId }) {
   useEffect(() => {
     let isMounted = true;
     fetchData();
-    const interval = setInterval(() => {
+    const interval = visibleInterval(() => {
       if (!isMounted) return;
       fetchData();
     }, 4000);
@@ -47,6 +51,7 @@ export default function Positions({ accounts, activeAccountId }) {
   }, []);
 
   const handleClosePosition = async (posId, symbol) => {
+    if (!(await confirm({ title: `Close ${symbol} position?`, subtitle: 'The whole position is closed at market.', rows: [['Pair', symbol]], confirmLabel: 'Close position', live: activeAccount?.mode === 'REAL' }))) return;
     try {
       const res = await fetch(`/api/positions/${posId}/close`, { method: 'POST' });
       const data = await res.json();
@@ -190,85 +195,51 @@ export default function Positions({ accounts, activeAccountId }) {
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-              <tr>
-                <th className="py-2.5 px-4">Contract / Exchange</th>
-                <th className="py-2.5 px-4">Side</th>
-                <th className="py-2.5 px-4 text-right">Size</th>
-                <th className="py-2.5 px-4 text-right">Entry Price</th>
-                <th className="py-2.5 px-4 text-right">Mark Price</th>
-                <th className="py-2.5 px-4 text-right">Liq. Price</th>
-                <th className="py-2.5 px-4 text-right">Margin (Lev.)</th>
-                <th className="py-2.5 px-4 text-right">Unrealized PnL</th>
-                <th className="py-2.5 px-4 text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-              {positions.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-500 font-sans">
-                    No active positions{scope === 'active' ? ' for this account' : ''}. Place a leveraged order on Delta Exchange or CoinDCX to open one.
-                  </td>
-                </tr>
-              ) : (
-                positions.map((pos) => {
-                  const isPositive = pos.unrealizedPnl >= 0;
-                  return (
-                    <tr key={pos.id} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3 px-4 font-sans">
-                        <div className="font-bold text-white">{pos.symbol}</div>
-                        <div className="text-[11px] text-slate-400">{scope === 'all' ? accountName(pos.accountId) : <span className="capitalize">{pos.broker}</span>}</div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          pos.side === 'LONG' ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
-                        }`}>
-                          {pos.side}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-right text-slate-200">{pos.size}</td>
-                      <td className="py-3 px-4 text-right text-slate-200">
-                        ${pos.entryPrice?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-3 px-4 text-right text-white font-semibold">
-                        ${pos.markPrice?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-3 px-4 text-right text-amber-400">
-                        ${pos.liquidationPrice?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-3 px-4 text-right text-slate-300">
-                        ${pos.margin?.toLocaleString(undefined, { minimumFractionDigits: 2 })} ({pos.leverage}x)
-                        {pos.fundingPaidUSDT ? (
-                          <div className={`text-[10px] ${pos.fundingPaidUSDT > 0 ? 'text-rose-300' : 'text-emerald-300'}`} title="Cumulative funding on this position (negative = received)">
-                            Funding {pos.fundingPaidUSDT > 0 ? '-' : '+'}${Math.abs(pos.fundingPaidUSDT).toFixed(4)}
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className={`font-bold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {isPositive ? '+' : ''}${pos.unrealizedPnl?.toFixed(2)}
-                        </div>
-                        <div className={`text-[10px] ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
-                          ({isPositive ? '+' : ''}{pos.pnlPercent}%)
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-center font-sans">
-                        <button
-                          onClick={() => handleClosePosition(pos.id, pos.symbol)}
-                          className="px-2.5 py-1 text-[11px] bg-slate-800 hover:bg-rose-950/80 hover:text-rose-300 hover:border-rose-800 text-slate-300 rounded border border-slate-700 transition-colors"
-                        >
-                          Market Close
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          rows={positions}
+          empty={`No active positions${scope === 'active' ? ' for this account' : ''}. Place a leveraged order on Delta Exchange or CoinDCX to open one.`}
+          columns={[
+            { key: 'symbol', header: 'Contract / Exchange', primary: true, mono: false, render: (r) => (
+              <div className="font-sans">
+                <div className="font-semibold text-ink">{r.symbol}</div>
+                <div className="text-xs text-muted">{scope === 'all' ? accountName(r.accountId) : <span className="capitalize">{r.broker}</span>}</div>
+              </div>
+            ) },
+            { key: 'side', header: 'Side', mono: false, render: (r) => (
+              <span className={`rounded px-2 py-0.5 text-xs font-bold ${r.side === 'LONG' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'}`}>
+                {r.side === 'LONG' ? '▲ LONG' : '▼ SHORT'}
+              </span>
+            ) },
+            { key: 'size', header: 'Size', align: 'right' },
+            { key: 'entryPrice', header: 'Entry', align: 'right', render: (r) => `$${r.entryPrice?.toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+            { key: 'markPrice', header: 'Mark', align: 'right', render: (r) => `$${r.markPrice?.toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+            { key: 'liquidationPrice', header: 'Liquidation', align: 'right', render: (r) => <span className="text-live">${r.liquidationPrice?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span> },
+            { key: 'margin', header: 'Margin (Lev.)', align: 'right', render: (r) => (
+              <>
+                ${r.margin?.toLocaleString(undefined, { minimumFractionDigits: 2 })} ({r.leverage}x)
+                {r.fundingPaidUSDT ? (
+                  <div className={`text-xs ${r.fundingPaidUSDT > 0 ? 'text-down' : 'text-up'}`} title="Cumulative funding on this position (negative = received)">
+                    Funding {r.fundingPaidUSDT > 0 ? '-' : '+'}${Math.abs(r.fundingPaidUSDT).toFixed(4)}
+                  </div>
+                ) : null}
+              </>
+            ) },
+            { key: 'unrealizedPnl', header: 'Unrealized P&L', align: 'right', render: (r) => (
+              <span className={r.unrealizedPnl >= 0 ? 'text-up' : 'text-down'}>
+                <b>{r.unrealizedPnl >= 0 ? '+' : ''}${r.unrealizedPnl?.toFixed(2)}</b>
+                <span className="ml-1 text-xs">({r.unrealizedPnl >= 0 ? '+' : ''}{r.pnlPercent}%)</span>
+              </span>
+            ) },
+            { key: 'action', header: 'Action', align: 'center', actions: true, mono: false, render: (r) => (
+              <button
+                onClick={() => handleClosePosition(r.id, r.symbol)}
+                className="w-full rounded-lg border border-line bg-raised px-3 py-1.5 text-xs font-semibold text-ink hover:border-down hover:text-down md:w-auto"
+              >
+                Close position
+              </button>
+            ) },
+          ]}
+        />
       </div>
 
       {/* Section 2: Spot Holdings & Multi-Exchange Balances */}
@@ -284,43 +255,25 @@ export default function Positions({ accounts, activeAccountId }) {
             Total Value: ${totalHoldingsValue.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT
           </span>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950 text-slate-500 font-medium border-b border-slate-800 text-[11px]">
-              <tr>
-                <th className="py-2.5 px-4">Asset</th>
-                <th className="py-2.5 px-4">Exchange / Account</th>
-                <th className="py-2.5 px-4 text-right">Available Free</th>
-                <th className="py-2.5 px-4 text-right">Locked in Orders</th>
-                <th className="py-2.5 px-4 text-right">Total Quantity</th>
-                <th className="py-2.5 px-4 text-right">Market Rate (USDT)</th>
-                <th className="py-2.5 px-4 text-right">Est. Value (USDT)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
-              {holdings.map((h, idx) => (
-                <tr key={`${h.broker}-${h.asset}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
-                  <td className="py-3 px-4 font-sans font-bold text-white flex items-center gap-2">
-                    <span className="w-6 h-6 rounded bg-slate-800 flex items-center justify-center text-[10px] text-slate-300">
-                      {h.asset}
-                    </span>
-                    <span>{h.name}</span>
-                  </td>
-                  <td className="py-3 px-4 font-sans text-slate-300">{scope === 'all' ? accountName(h.accountId) : <span className="capitalize">{h.broker}</span>}</td>
-                  <td className="py-3 px-4 text-right text-slate-200">{h.free.toLocaleString()}</td>
-                  <td className="py-3 px-4 text-right text-slate-500">{h.locked.toLocaleString()}</td>
-                  <td className="py-3 px-4 text-right text-white font-semibold">{h.total.toLocaleString()}</td>
-                  <td className="py-3 px-4 text-right text-slate-400">
-                    ${h.rateUSDT < 0.01 ? h.rateUSDT.toFixed(6) : h.rateUSDT.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </td>
-                  <td className="py-3 px-4 text-right text-emerald-400 font-bold">
-                    ${h.valueUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          rows={holdings}
+          rowKey={(h) => `${h.accountId}-${h.broker}-${h.asset}`}
+          empty="No balances on this account yet."
+          columns={[
+            { key: 'asset', header: 'Asset', primary: true, mono: false, render: (h) => (
+              <span className="flex items-center gap-2 font-semibold text-ink">
+                <span className="grid size-6 place-items-center rounded bg-raised text-xs text-ink2">{h.asset}</span>
+                {h.name}
+              </span>
+            ) },
+            { key: 'account', header: 'Exchange / Account', mono: false, render: (h) => (scope === 'all' ? accountName(h.accountId) : <span className="capitalize">{h.broker}</span>) },
+            { key: 'free', header: 'Available', align: 'right', render: (h) => h.free.toLocaleString() },
+            { key: 'locked', header: 'Locked in orders', align: 'right', render: (h) => <span className="text-muted">{h.locked.toLocaleString()}</span> },
+            { key: 'total', header: 'Total', align: 'right', render: (h) => h.total.toLocaleString() },
+            { key: 'rate', header: 'Rate (USDT)', align: 'right', render: (h) => <span className="text-muted">${h.rateUSDT < 0.01 ? h.rateUSDT.toFixed(6) : h.rateUSDT.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span> },
+            { key: 'value', header: 'Value (USDT)', align: 'right', render: (h) => <b className="text-up">${h.valueUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b> },
+          ]}
+        />
       </div>
     </div>
   );
