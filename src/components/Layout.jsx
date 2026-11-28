@@ -1,38 +1,40 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import CommandPalette from '../ui/CommandPalette.jsx';
 import {
   Activity, Layers, ArrowLeftRight, ShieldCheck, Cpu, Server,
   TrendingUp, ShieldAlert, Bot, Sparkles, PieChart, Sun, Moon, Contrast, Rows3,
+  PanelLeftClose, PanelLeftOpen, Menu, X,
 } from 'lucide-react';
 
 // Grouped by intent: trade, automate, portfolio, settings.
 const NAV_GROUPS = [
-  [
+  { title: 'Trade', items: [
     { id: 'dashboard', label: 'Terminal', icon: Activity },
     { id: 'screener', label: 'Screener', icon: TrendingUp },
-  ],
-  [
+  ] },
+  { title: 'Automate', items: [
     { id: 'bots', label: 'Algo Bots', icon: Bot },
     { id: 'backtest', label: 'Backtesting', icon: Sparkles },
     { id: 'mirror', label: 'Mirror Trading', icon: Cpu },
-  ],
-  [
+  ] },
+  { title: 'Portfolio', items: [
     { id: 'trades', label: 'Orders & Trades', icon: ArrowLeftRight },
     { id: 'risk', label: 'Risk Cockpit', icon: ShieldAlert },
     { id: 'positions', label: 'Positions & Balances', icon: Layers },
     { id: 'pnl', label: 'P&L', icon: PieChart },
-  ],
-  [
+  ] },
+  { title: 'Settings', items: [
     { id: 'accounts', label: 'Exchange Accounts', icon: ShieldCheck },
     { id: 'test-api', label: 'API Console', icon: Server },
-  ],
+  ] },
 ];
-const ALL_LINKS = NAV_GROUPS.flat();
+const ALL_LINKS = NAV_GROUPS.flatMap((g) => g.items);
 
 const BROKER = {
   coinswitch: { label: 'CoinSwitch PRO', dot: '#E8A838' },
   delta: { label: 'Delta India', dot: '#38BDF8' },
   coindcx: { label: 'CoinDCX Prime', dot: '#A78BFA' },
+  binance: { label: 'Binance Spot', dot: '#F0B90B' },
 };
 const THEMES = ['dark', 'light', 'contrast'];
 const THEME_ICON = { dark: Moon, light: Sun, contrast: Contrast };
@@ -48,6 +50,19 @@ function usePref(key, fallback, attr) {
   return [value, setValue];
 }
 
+/** Tracks a CSS media query so the sidebar can behave as a rail on desktop and a drawer on phones. */
+function useMediaQuery(query) {
+  const [match, setMatch] = useState(() => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(query).matches : true));
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const on = () => setMatch(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return match;
+}
+
 export default function Layout({ activeTab, setActiveTab, accounts, activeAccountId, setActiveAccountId, feedOk = true, wsConnected = false, tickers = [], onSelectPair, children }) {
   const [theme, setTheme] = usePref('qc-theme', 'dark', 'data-theme');
   const [density, setDensity] = usePref('qc-density', 'comfortable', 'data-density');
@@ -59,8 +74,50 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
 
   const cycleTheme = () => setTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
 
+  // Sidebar: a slim rail (desktop, remembered) or an off-canvas drawer (phones)
+  const isDesktop = useMediaQuery('(min-width: 768px)');
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('qc-sidebar') === 'collapsed'; } catch { return false; }
+  });
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => {
+    try { localStorage.setItem('qc-sidebar', collapsed ? 'collapsed' : 'open'); } catch { /* storage unavailable */ }
+  }, [collapsed]);
+  useEffect(() => { if (isDesktop) setDrawerOpen(false); }, [isDesktop]);
+  const toggleSidebar = useCallback(() => {
+    if (isDesktop) setCollapsed((c) => !c); else setDrawerOpen((o) => !o);
+  }, [isDesktop]);
+  // Ctrl/Cmd+B toggles; Escape closes the phone drawer; the page behind it does not scroll while it is open
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar(); }
+      else if (e.key === 'Escape') setDrawerOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleSidebar]);
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [drawerOpen]);
+
+  const go = (id) => { setActiveTab(id); setDrawerOpen(false); };
+  // On phones the drawer is always full width with labels; only desktop uses the rail
+  const rail = isDesktop && collapsed;
+  const labelCls = `overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ${rail ? 'max-w-0 opacity-0' : 'max-w-[180px] opacity-100'}`;
+  const tip = (text) => rail && (
+    <span role="tooltip" className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-lg border border-line bg-raised px-2.5 py-1 text-xs font-medium text-ink opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+      {text}
+    </span>
+  );
+  const itemCls = (on) => `group relative flex h-10 w-full items-center gap-3 rounded-xl px-[10px] text-sm font-medium transition-colors ${
+    on ? 'bg-raised text-ink ring-1 ring-line' : 'text-muted hover:bg-raised/60 hover:text-ink'
+  }`;
+
   return (
-    <div className="min-h-screen bg-canvas text-ink font-sans md:grid md:grid-cols-[72px_1fr]">
+    <div className="min-h-screen bg-canvas text-ink font-sans md:flex">
       <CommandPalette
         pages={ALL_LINKS.map((l) => ({ ...l, shortcut: { dashboard: 'G T', positions: 'G P', trades: 'G O' }[l.id] }))}
         tickers={tickers}
@@ -73,53 +130,82 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
       />
       {isLive && <div aria-hidden className="fixed inset-x-0 top-0 h-1 bg-live-stripe z-50" />}
 
-      {/* Icon rail (tablet and desktop) */}
-      <aside className="hidden md:flex sticky top-0 h-screen flex-col items-center gap-1 border-r border-line bg-surface py-6">
-        <div className="mb-4 grid size-10 place-items-center rounded-xl bg-accent font-bold text-canvas">Q</div>
-        {NAV_GROUPS.map((group, gi) => (
-          <div key={gi} className="flex flex-col items-center gap-1 border-t border-line/60 pt-2 first:border-0 first:pt-0 mt-2 first:mt-0">
-            {group.map(({ id, label, icon: Icon }) => {
-              const on = activeTab === id;
-              return (
-                <button
-                  key={id}
-                  onClick={() => setActiveTab(id)}
-                  aria-label={label}
-                  aria-current={on ? 'page' : undefined}
-                  title={label}
-                  className={`group relative grid size-11 place-items-center rounded-xl transition-colors ${
-                    on ? 'bg-raised text-ink ring-1 ring-line' : 'text-muted hover:bg-raised/60 hover:text-ink'
-                  }`}
-                >
-                  <Icon className="size-5" strokeWidth={1.7} />
-                  <span className="pointer-events-none absolute left-14 z-50 whitespace-nowrap rounded-lg border border-line bg-raised px-2.5 py-1 text-xs font-medium text-ink opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-                    {label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ))}
-        <div className="mt-auto flex flex-col gap-1">
-          <button onClick={cycleTheme} aria-label={`Theme: ${theme}. Click to change`} title={`Theme: ${theme}`} className="grid size-11 place-items-center rounded-xl text-muted hover:bg-raised/60 hover:text-ink">
-            <ThemeIcon className="size-5" strokeWidth={1.7} />
-          </button>
+      {/* Phone drawer backdrop */}
+      {drawerOpen && !isDesktop && (
+        <button aria-label="Close menu" tabIndex={-1} onClick={() => setDrawerOpen(false)} className="fixed inset-0 z-[55] bg-black/55 md:hidden" />
+      )}
+
+      {/* Sidebar: slides between full width and a slim rail on desktop; off-canvas drawer on phones */}
+      <aside
+        id="sidebar"
+        data-sidebar
+        inert={!isDesktop && !drawerOpen}
+        aria-label="Sidebar"
+        className={`fixed inset-y-0 left-0 z-[60] flex w-72 max-w-[85vw] flex-col border-r border-line bg-surface transition-[transform,width] duration-200 ease-out
+          ${drawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
+          md:sticky md:top-0 md:z-50 md:h-screen md:max-w-none md:shrink-0 md:translate-x-0 md:shadow-none ${collapsed ? 'md:w-16' : 'md:w-64'}`}
+      >
+        <div className={`flex h-14 shrink-0 items-center gap-2 px-3 ${rail ? 'justify-center' : 'justify-between'}`}>
+          {!rail && (
+            <div className="flex min-w-0 items-center gap-2.5 pl-0.5">
+              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-sm font-bold text-canvas">Q</div>
+              <span className="truncate text-sm font-semibold tracking-tight text-ink">Quanta Crypto</span>
+            </div>
+          )}
           <button
-            onClick={() => setDensity(density === 'compact' ? 'comfortable' : 'compact')}
-            aria-pressed={density === 'compact'}
-            aria-label="Compact density"
-            title={`Density: ${density}`}
-            className={`grid size-11 place-items-center rounded-xl hover:bg-raised/60 ${density === 'compact' ? 'text-accent' : 'text-muted hover:text-ink'}`}
+            onClick={toggleSidebar}
+            aria-label={isDesktop ? (collapsed ? 'Expand sidebar' : 'Collapse sidebar') : 'Close menu'}
+            aria-expanded={isDesktop ? !collapsed : drawerOpen}
+            aria-controls="sidebar"
+            title={isDesktop ? `${collapsed ? 'Expand' : 'Collapse'} sidebar (Ctrl+B)` : 'Close menu'}
+            className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-raised/60 hover:text-ink"
           >
-            <Rows3 className="size-5" strokeWidth={1.7} />
+            {!isDesktop ? <X className="size-5" strokeWidth={1.7} /> : collapsed ? <PanelLeftOpen className="size-5" strokeWidth={1.7} /> : <PanelLeftClose className="size-5" strokeWidth={1.7} />}
+          </button>
+        </div>
+
+        <nav aria-label="Main" className="scrollbar-none flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3">
+          {NAV_GROUPS.map((group, gi) => (
+            <div key={group.title} className="mt-3 first:mt-1">
+              {rail
+                ? (gi > 0 && <div className="mx-2 mb-2 border-t border-line/60" />)
+                : <div className="px-[10px] pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted/80">{group.title}</div>}
+              <div className="flex flex-col gap-0.5">
+                {group.items.map(({ id, label, icon: Icon }) => {
+                  const on = activeTab === id;
+                  return (
+                    <button key={id} onClick={() => go(id)} aria-label={label} aria-current={on ? 'page' : undefined} className={itemCls(on)}>
+                      <Icon className="size-5 shrink-0" strokeWidth={1.7} />
+                      <span className={labelCls}>{label}</span>
+                      {tip(label)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        <div className="shrink-0 space-y-0.5 border-t border-line/60 p-3">
+          <button onClick={cycleTheme} aria-label={`Theme: ${theme}. Click to change`} className={itemCls(false)}>
+            <ThemeIcon className="size-5 shrink-0" strokeWidth={1.7} />
+            <span className={`${labelCls} capitalize`}>Theme: {theme}</span>
+            {tip(`Theme: ${theme}`)}
+          </button>
+          <button onClick={() => setDensity(density === 'compact' ? 'comfortable' : 'compact')} aria-pressed={density === 'compact'} aria-label="Compact density" className={`${itemCls(false)} ${density === 'compact' ? '!text-accent' : ''}`}>
+            <Rows3 className="size-5 shrink-0" strokeWidth={1.7} />
+            <span className={labelCls}>{density === 'compact' ? 'Compact density' : 'Comfortable density'}</span>
+            {tip(`Density: ${density}`)}
           </button>
         </div>
       </aside>
 
-      <div className="flex min-h-screen min-w-0 flex-col pb-16 md:pb-0">
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         {/* Top bar: page context left, account and mode right. Mode is visible at every width. */}
         <header className="sticky top-1 z-40 flex h-14 items-center gap-3 border-b border-line bg-canvas/80 px-4 backdrop-blur lg:px-6">
-          <div className="md:hidden grid size-8 place-items-center rounded-lg bg-accent text-sm font-bold text-canvas">Q</div>
+          <button onClick={toggleSidebar} aria-label="Open menu" aria-controls="sidebar" aria-expanded={drawerOpen} className="grid size-9 place-items-center rounded-lg text-muted hover:bg-raised/60 hover:text-ink md:hidden">
+            <Menu className="size-5" strokeWidth={1.7} />
+          </button>
           <h1 className="truncate text-sm font-semibold text-ink">{current?.label}</h1>
           <div className="flex-1" />
           <button
@@ -175,24 +261,6 @@ export default function Layout({ activeTab, setActiveTab, accounts, activeAccoun
           </span>
         </footer>
       </div>
-
-      {/* Bottom tab bar (phones) */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 flex h-16 overflow-x-auto border-t border-line bg-surface md:hidden scrollbar-none" aria-label="Main">
-        {ALL_LINKS.map(({ id, label, icon: Icon }) => {
-          const on = activeTab === id;
-          return (
-            <button
-              key={id}
-              onClick={() => setActiveTab(id)}
-              aria-current={on ? 'page' : undefined}
-              className={`flex min-w-[4.5rem] flex-1 flex-col items-center justify-center gap-1 text-[11px] ${on ? 'text-ink' : 'text-muted'}`}
-            >
-              <Icon className="size-5" strokeWidth={1.7} />
-              <span className="max-w-full truncate px-1">{label.split(' ')[0]}</span>
-            </button>
-          );
-        })}
-      </nav>
     </div>
   );
 }

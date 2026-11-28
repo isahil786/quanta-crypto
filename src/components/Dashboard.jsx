@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Sliders,
   Clock,
   Zap,
   Search,
@@ -16,6 +15,14 @@ import PriceLadder from '../ui/PriceLadder.jsx';
 import { visibleInterval } from '../ui/visibleInterval.js';
 // Live orders worth more than this (USD) also need a typed confirmation.
 const TYPED_CONFIRM_ABOVE_USD = 5000;
+
+// Header stats: show a dash, never "$undefined", while the feed has not delivered a value yet.
+const money = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? `$${Number(n).toLocaleString()}` : '—');
+const compactUsd = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '—';
+  return v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v).toLocaleString()}`;
+};
 
 export default function Dashboard({
   accounts,
@@ -54,7 +61,7 @@ export default function Dashboard({
   const [orderType, setOrderType] = useState('LIMIT');
   const [price, setPrice] = useState(currentPair.price.toString());
   const [size, setSize] = useState('0.1');
-  const [leverage, setLeverage] = useState(broker === 'delta' ? 10 : 1);
+  // Spot only: the server rejects any leverage other than 1, so the ticket never offers it.
   const [enableTpSl, setEnableTpSl] = useState(false);
   const [tpPrice, setTpPrice] = useState('');
   const [slPrice, setSlPrice] = useState('');
@@ -126,14 +133,14 @@ export default function Dashboard({
   const numericPrice = orderType === 'MARKET' ? currentPair.price : Number(price) || currentPair.price;
   const numericSize = Number(size) || 0;
   const orderValue = numericPrice * numericSize;
-  const estimatedMargin = leverage > 1 ? orderValue / leverage : orderValue;
+  const estimatedMargin = orderValue;
   const estimatedFee = orderValue * (broker === 'delta' ? 0.0005 : 0.001);
 
   // Quick percent size
   const handlePercentSize = (percent) => {
-    const available = activeAccount?.availableMarginUSDT || 10000;
+    const available = Number(activeAccount?.availableMarginUSDT) || 0; // never size against an invented balance
     const alloc = (available * percent) / 100;
-    const calculatedSize = (alloc * (leverage || 1)) / (numericPrice || 1);
+    const calculatedSize = alloc / (numericPrice || 1);
     setSize(calculatedSize.toFixed(calculatedSize < 1 ? 4 : 2));
   };
 
@@ -174,7 +181,7 @@ export default function Dashboard({
         orderType: o.orderType,
         price: o.orderType === 'MARKET' ? currentPair.price : o.price,
         size: o.size,
-        leverage: isCoinSwitchSpot ? 1 : Number(leverage),
+        leverage: 1,
         tpPrice: !override && enableTpSl && tpPrice ? Number(tpPrice) : undefined,
         slPrice: !override && enableTpSl && slPrice ? Number(slPrice) : undefined,
       };
@@ -185,10 +192,11 @@ export default function Dashboard({
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      // A proxy error page is not JSON; do not show the user "Unexpected token <"
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to place order');
+        throw new Error(data.error || `Failed to place order (HTTP ${res.status})`);
       }
 
       toast('success', `Order #${data.id} ${String(data.status || 'placed').toLowerCase()}`, `${o.side} ${o.size} ${currentPair.symbol} @ ${data.price}`);
@@ -254,8 +262,8 @@ export default function Dashboard({
             aria-label="Exchange notes"
             title={
               isCoinSwitchSpot ? 'CoinSwitch Spot: Market & Limit orders with TP/SL. Mirror Trading copies master orders to replicas.'
-                : broker === 'delta' ? 'Delta Exchange: bracket and TP/SL orders, up to 100x leverage.'
-                : broker === 'coindcx' ? 'CoinDCX Prime: target and stop-loss edit, up to 20x margin.' : ''
+                : broker === 'delta' ? 'Delta Exchange India: spot orders. Leverage is not supported.'
+                : broker === 'coindcx' ? 'CoinDCX Prime: spot orders. Margin is not supported.' : ''
             }
             className="grid size-5 cursor-help place-items-center rounded-full border border-line text-[11px] text-muted"
           >
@@ -270,10 +278,10 @@ export default function Dashboard({
         </span>
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
           {[
-            ['24h high', `$${currentPair.high24h?.toLocaleString()}`],
-            ['24h low', `$${currentPair.low24h?.toLocaleString()}`],
-            ['24h volume', `$${currentPair.volume24h}`],
-            ['Trades', currentPair.tradesCount?.toLocaleString()],
+            ['24h high', money(currentPair.high24h)],
+            ['24h low', money(currentPair.low24h)],
+            ['24h volume', compactUsd(currentPair.quoteVolume)],
+            ['Trades', Number.isFinite(Number(currentPair.tradesCount)) && currentPair.tradesCount > 0 ? Number(currentPair.tradesCount).toLocaleString() : '—'],
           ].map(([k, v]) => (
             <div key={k}><dt className="text-muted">{k}</dt><dd className="font-mono text-sm text-ink">{v}</dd></div>
           ))}
@@ -430,7 +438,7 @@ export default function Dashboard({
                 <span>Trade {currentPair.symbol}</span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
-                Avail: ${activeAccount?.availableMarginUSDT?.toLocaleString() || '10,000'} USDT
+                Avail: ${Number(activeAccount?.availableMarginUSDT ?? 0).toLocaleString()} USDT
               </div>
             </div>
 
@@ -445,7 +453,7 @@ export default function Dashboard({
                     : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/20'
                 }`}
               >
-                BUY / LONG
+                BUY
               </button>
               <button
                 type="button"
@@ -456,7 +464,7 @@ export default function Dashboard({
                     : 'bg-rose-500/10 text-rose-400 border-rose-500/25 hover:bg-rose-500/20'
                 }`}
               >
-                SELL / SHORT
+                SELL
               </button>
             </div>
 
@@ -486,34 +494,6 @@ export default function Dashboard({
                 Market
               </button>
             </div>
-
-            {/* Leverage Slider */}
-            {!isCoinSwitchSpot && (
-              <div className="flex flex-col gap-1.5 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span className="flex items-center gap-1">
-                    <Sliders className="w-3 h-3" />
-                    Leverage Margin
-                  </span>
-                  <span className="text-emerald-400 font-mono font-bold">{leverage}x</span>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max={broker === 'delta' ? '100' : '20'}
-                  step="1"
-                  value={leverage}
-                  onChange={(e) => setLeverage(Number(e.target.value))}
-                  className="w-full accent-emerald-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
-                />
-                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>1x (Spot)</span>
-                  <span>10x</span>
-                  <span>{broker === 'delta' ? '50x' : '15x'}</span>
-                  <span>{broker === 'delta' ? '100x' : '20x'}</span>
-                </div>
-              </div>
-            )}
 
             {/* Price Input */}
             {orderType === 'LIMIT' && (
@@ -660,7 +640,6 @@ export default function Dashboard({
             ['Size', String(po ? po.size : size)],
           ];
           if ((po ? po.orderType : orderType) === 'LIMIT') rows.push(['Limit price', String(po ? po.price : price)]);
-          if (!isCoinSwitchSpot) rows.push(['Leverage', `${leverage}x`]);
           if (!po && enableTpSl && tpPrice) rows.push(['Take profit', String(tpPrice)]);
           if (!po && enableTpSl && slPrice) rows.push(['Stop loss', String(slPrice)]);
           rows.push(['Value', `≈ $${(pendingOrder?.value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`]);

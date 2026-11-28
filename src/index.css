@@ -65,8 +65,8 @@
 }
 
 /* Buttons: tighter padding and smaller text in compact mode */
-[data-density="compact"] button,
-[data-density="compact"] [role="button"],
+[data-density="compact"] button:not([data-sidebar] *),
+[data-density="compact"] [role="button"]:not([data-sidebar] *),
 [data-density="compact"] .px-3,
 [data-density="compact"] .px-4,
 [data-density="compact"] .py-1,

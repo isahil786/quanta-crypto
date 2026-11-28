@@ -16,7 +16,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div aria-live="polite" className="pointer-events-none fixed bottom-20 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2 md:bottom-12">
+      <div aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2 md:bottom-12">
         {items.map((t) => (
           <div key={t.id} className={`pointer-events-auto flex items-start gap-3 rounded-xl border border-line border-l-4 bg-raised p-3 shadow-lg ${TONE[t.tone] || TONE.info}`}>
             <div className="min-w-0 flex-1">

@@ -63,3 +63,17 @@ After fixes: 113 tests pass, lint/tsc/build all green.
 Round 3b: WS token moved from `?token=` to the `Sec-WebSocket-Protocol` header (verified: good token connects, bad/missing get 401).
 
 Still needs your decision: mirroring on by default with REAL replicas auto-wired (#1), plaintext API keys (#4).
+
+## Round 4 (sidebar + UI bug pass)
+| Area | Change |
+|---|---|
+| **Sidebar (new)** | Claude-style collapsible sidebar. Desktop: full 256px sidebar with section labels that slides to a 64px icon rail (tooltips on hover/focus); state remembered in `localStorage`; **Ctrl/Cmd+B** toggles. Phones: off-canvas drawer with backdrop, hamburger in the header, Esc / tap-outside / navigating closes it, page scroll locked while open, drawer is `inert` when closed. Replaces the 9-icon scrolling bottom bar. Theme and density toggles now have labels. |
+| **Orders failed on Delta/CoinDCX/Binance** | The order ticket showed a 1-100x leverage slider (default 10x on Delta) but the server only accepts leverage 1 (spot only), so moving it made every order fail. Slider removed, always sends 1; misleading "up to 100x" tooltips and "BUY / LONG, SELL / SHORT" labels fixed. |
+| Fake balance | Ticket showed and sized % buttons against an invented 10,000 USDT when the real balance was 0 (`0 \|\| 10000`). Now uses the real value. |
+| `$undefined` stats | 24h volume read a field WebSocket tickers do not carry; high/low/trades showed `$undefined` before data arrived. Now derived from `quoteVolume`, dash when unknown. |
+| API token fetch wrapper | `main.tsx` threw on `fetch(new URL(...))` and attached the bearer token to any URL starting with `/api` read once at load. Now parses the URL, only same-origin `/api`, token read per request. |
+| Order errors | A non-JSON error (proxy 502) showed "Unexpected token <". Now shows `HTTP <status>`. |
+| Binance accounts | Header showed generic "Exchange" label/colour for Binance accounts. |
+| Compact density | Compact-mode CSS forced padding/font on every button; sidebar is now excluded. |
+| Screener on phones | Header card overflowed the viewport by 4px. |
+| Toasts | Sat 80px above the bottom on phones for the removed tab bar. |

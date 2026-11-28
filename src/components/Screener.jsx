@@ -203,7 +203,7 @@ export default function Screener({ tickers, onSelectPair }) {
   return (
     <div className="flex flex-col gap-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 rounded-xl px-5 py-4">
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 bg-slate-900/60 border border-slate-800/80 rounded-xl px-5 py-4">
         <div>
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-emerald-400" />
@@ -230,7 +230,7 @@ export default function Screener({ tickers, onSelectPair }) {
             />
           </div>
 
-          <div className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-lg">
+          <div className="scrollbar-none flex max-w-full items-center gap-1 overflow-x-auto p-1 bg-slate-950 border border-slate-800 rounded-lg">
             <button
               onClick={() => setFilterMode('all')}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
